@@ -6,6 +6,8 @@
 .terraform.lock.hcl
 terraform.tfvars
 *.tfplan
+*-plan
+*-plan-new
 
 # Python
 __pycache__/
