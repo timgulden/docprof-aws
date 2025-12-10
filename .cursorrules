@@ -1,0 +1,44 @@
+# DocProf AWS Migration - Cursor Rules
+
+## Project Context
+This is the AWS-native serverless implementation of DocProf, migrated from the local MAExpert codebase.
+
+## Key Principles
+1. **Functional Programming**: Maintain pure logic layer, separate from effects
+2. **Infrastructure as Code**: All AWS resources defined in Terraform
+3. **Cost Conscious**: Optimize for <$100/month dev, <$15/month idle
+4. **Reference MAExpert**: Use `../MAExpert/` as reference, don't modify it
+
+## Architecture
+- **Backend**: Lambda + API Gateway (replaces FastAPI)
+- **Database**: Aurora Serverless PostgreSQL + pgvector (replaces local PostgreSQL)
+- **LLM**: AWS Bedrock Claude (replaces Anthropic API)
+- **Embeddings**: AWS Bedrock Titan (replaces OpenAI)
+- **TTS**: AWS Polly Neural (replaces OpenAI TTS)
+- **Frontend**: React on S3 + CloudFront (same as before)
+
+## Code Organization
+- `terraform/` - Infrastructure as Code
+- `src/lambda/` - Lambda function code (maintains FP patterns from MAExpert)
+- `src/frontend/` - React app (to be migrated)
+- `docs/contracts/` - API contracts extracted from MAExpert
+- `legacy/` - Reference to MAExpert codebase
+
+## When Implementing
+1. Reference MAExpert logic in `../MAExpert/src/logic/` for business logic patterns
+2. Convert MAExpert effects in `../MAExpert/src/effects/` to Lambda-compatible code
+3. Maintain same API contracts (see `docs/contracts/`)
+4. Follow migration guide: `../MAExpert/docs/DocProf_AWS_Migration_Guide.md`
+
+## Terraform Conventions
+- Use modules for reusable components
+- Tag all resources: Project=docprof, Environment=dev
+- Use variables.tf for configuration
+- Keep terraform.tfvars gitignored (use .example file)
+
+## Lambda Conventions
+- Keep handlers thin (delegate to logic layer)
+- Use shared utilities in `src/lambda/shared/`
+- Maintain functional programming patterns from MAExpert
+- Use environment variables for configuration
+
