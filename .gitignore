@@ -53,6 +53,14 @@ logs/
 .env.local
 .env.*.local
 
+# AWS Credentials (never commit these!)
+*credentials*.csv
+*accessKeys*.csv
+*access_key*.csv
+*secret*.csv
+aws-credentials*
+.aws/credentials
+
 # Frontend
 node_modules/
 .next/

@@ -42,7 +42,46 @@ When implementing Lambda functions, reference:
 
 ## Current Status
 
-🚧 **Ready for Phase 1** - Infrastructure Foundation
+✅ **Phase 1.1 & 1.2 Complete** - AWS Account Setup & Terraform Configuration
 
-The repo is set up and ready to start building AWS infrastructure. All the scaffolding is in place.
+### Completed
+- ✅ AWS IAM user created (`docprof-admin`)
+- ✅ AWS CLI configured with profile `docprof-dev`
+- ✅ Terraform installed (v1.5.7)
+- ✅ Terraform initialized and validated
+- ✅ AWS connection tested successfully
+
+### Next Steps
+- 🚧 **Phase 1.3**: VPC and Networking
+- 🚧 **Phase 1.4**: IAM Roles and Policies  
+- 🚧 **Phase 1.5**: Initial Deployment
+
+## Using Terraform
+
+You can use Terraform in two ways:
+
+### Option 1: Use the helper script (recommended)
+```bash
+./scripts/terraform.sh plan
+./scripts/terraform.sh apply
+```
+
+### Option 2: Set AWS_PROFILE manually
+```bash
+cd terraform/environments/dev
+export AWS_PROFILE=docprof-dev
+terraform plan
+terraform apply
+```
+
+## Security Notes
+
+⚠️ **Important**: The credential CSV files in your Downloads folder contain sensitive information:
+- `docprof-admin_credentials.csv` - Console password
+- `docprof-admin_accessKeys.csv` - Access keys
+
+**Recommended actions**:
+1. Delete these files after confirming everything works
+2. Never commit them to git (already in .gitignore)
+3. Consider enabling MFA on the IAM user for additional security
 

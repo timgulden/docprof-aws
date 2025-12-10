@@ -16,5 +16,11 @@ variable "environment" {
   default     = "dev"
 }
 
+variable "enable_ai_endpoints" {
+  description = "Enable VPC endpoints for AI services (Bedrock, Polly). Costs ~$0.04/hour when enabled. Default: false"
+  type        = bool
+  default     = false
+}
+
 # Add more variables as needed
 
