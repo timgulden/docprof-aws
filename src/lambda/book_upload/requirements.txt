@@ -1,0 +1,8 @@
+# Book Upload Lambda Dependencies
+
+# AWS SDK (included in Lambda runtime)
+boto3>=1.34.0
+
+# Database
+psycopg2-binary>=2.9.9
+

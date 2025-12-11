@@ -1,0 +1,2 @@
+# Course parts handler Lambda dependencies
+# Most dependencies are in Lambda layer

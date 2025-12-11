@@ -114,3 +114,22 @@ resource "aws_vpc_endpoint" "dynamodb" {
     }
   )
 }
+
+# Secrets Manager Interface Endpoint - ALWAYS ON (Required for Lambda to access DB password)
+resource "aws_vpc_endpoint" "secretsmanager" {
+  vpc_id              = aws_vpc.main.id
+  service_name        = "com.amazonaws.${data.aws_region.current.name}.secretsmanager"
+  vpc_endpoint_type   = "Interface"
+  subnet_ids          = aws_subnet.private[*].id
+  security_group_ids  = [aws_security_group.vpc_endpoints.id]
+  private_dns_enabled = true
+
+  tags = merge(
+    var.tags,
+    {
+      Name    = "${var.project_name}-${var.environment}-secretsmanager-endpoint"
+      Service = "secretsmanager"
+      Required = "true"
+    }
+  )
+}

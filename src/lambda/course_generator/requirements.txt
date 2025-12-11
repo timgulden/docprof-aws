@@ -1,0 +1,2 @@
+# Course generator Lambda dependencies
+# Most dependencies are in Lambda layer

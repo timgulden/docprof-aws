@@ -86,12 +86,107 @@ output "frontend_bucket_name" {
   value       = module.s3.frontend_bucket_name
 }
 
+output "document_processor_function_name" {
+  description = "Document processor Lambda function name"
+  value       = module.document_processor_lambda.function_name
+}
+
+output "document_processor_function_arn" {
+  description = "Document processor Lambda function ARN"
+  value       = module.document_processor_lambda.function_arn
+}
+
+output "book_upload_function_name" {
+  description = "Book upload Lambda function name"
+  value       = module.book_upload_lambda.function_name
+}
+
+output "book_upload_function_arn" {
+  description = "Book upload Lambda function ARN"
+  value       = module.book_upload_lambda.function_arn
+}
+
+output "api_gateway_url" {
+  description = "API Gateway base URL"
+  value       = module.api_gateway.api_url
+}
+
+output "api_gateway_id" {
+  description = "API Gateway ID"
+  value       = module.api_gateway.api_id
+}
+
+output "book_upload_endpoint" {
+  description = "Book upload endpoint URL"
+  value       = "${module.api_gateway.api_url}/books/upload"
+}
+
+output "ai_services_status_endpoint" {
+  description = "AI services status endpoint URL"
+  value       = "${module.api_gateway.api_url}/ai-services/status"
+}
+
+output "ai_services_enable_endpoint" {
+  description = "AI services enable endpoint URL"
+  value       = "${module.api_gateway.api_url}/ai-services/enable"
+}
+
+output "ai_services_disable_endpoint" {
+  description = "AI services disable endpoint URL"
+  value       = "${module.api_gateway.api_url}/ai-services/disable"
+}
+
+output "dynamodb_sessions_table_name" {
+  description = "DynamoDB sessions table name"
+  value       = module.dynamodb.table_name
+}
+
+output "dynamodb_sessions_table_arn" {
+  description = "DynamoDB sessions table ARN"
+  value       = module.dynamodb.table_arn
+}
+
+output "dynamodb_course_state_table_name" {
+  description = "DynamoDB course state table name"
+  value       = module.dynamodb_course_state.table_name
+}
+
+output "eventbridge_bus_name" {
+  description = "EventBridge custom bus name for course events"
+  value       = module.eventbridge.event_bus_name
+}
+
+output "eventbridge_bus_arn" {
+  description = "EventBridge custom bus ARN"
+  value       = module.eventbridge.event_bus_arn
+}
+
+output "chat_handler_function_name" {
+  description = "Chat handler Lambda function name"
+  value       = module.chat_handler_lambda.function_name
+}
+
+output "chat_handler_function_arn" {
+  description = "Chat handler Lambda function ARN"
+  value       = module.chat_handler_lambda.function_arn
+}
+
+output "chat_endpoint" {
+  description = "Chat endpoint URL"
+  value       = "${module.api_gateway.api_url}/chat"
+}
+
+output "course_request_endpoint" {
+  description = "Course request endpoint URL"
+  value       = "${module.api_gateway.api_url}/courses"
+}
+
+output "course_request_handler_function_name" {
+  description = "Course request handler Lambda function name"
+  value       = module.course_request_handler_lambda.function_name
+}
+
 # TODO: Add more outputs as modules are added:
-# output "api_gateway_url" {
-#   description = "API Gateway endpoint URL"
-#   value       = module.api_gateway.api_url
-# }
-#
 # output "cloudfront_url" {
 #   description = "CloudFront distribution URL"
 #   value       = module.frontend.cloudfront_url

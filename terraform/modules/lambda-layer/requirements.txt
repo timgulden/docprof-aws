@@ -1,0 +1,23 @@
+# Consolidated Python dependencies for DocProf Lambda functions
+# This file combines dependencies from all Lambda functions
+
+# PDF processing
+pymupdf>=1.23.0  # PyMuPDF for PDF text and image extraction
+Pillow>=10.0.0   # PIL for image processing
+
+# Database
+psycopg2-binary>=2.9.9  # PostgreSQL adapter
+
+# AWS SDK (included in Lambda runtime, but listed for clarity)
+boto3>=1.34.0
+
+# Utilities
+python-dateutil>=2.8.2
+
+# MAExpert dependencies (for reusing ingestion logic)
+loguru>=0.7.0  # Logging
+pydantic>=2.4.0  # Data validation
+pydantic-settings>=2.0.0  # Configuration
+anthropic>=0.34.0  # LLM client (we use Bedrock, but code imports it)
+tenacity>=8.2.0  # Retry logic
+

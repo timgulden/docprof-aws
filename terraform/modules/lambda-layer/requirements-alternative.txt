@@ -1,0 +1,17 @@
+# Alternative requirements using aws-psycopg2 (pre-built for Lambda)
+# Use this if Docker is not available for building the layer
+
+# PDF processing
+pymupdf>=1.23.0  # PyMuPDF for PDF text and image extraction
+Pillow>=10.0.0   # PIL for image processing
+
+# Database - Use aws-psycopg2 instead of psycopg2-binary
+# aws-psycopg2 is pre-compiled for Lambda (Amazon Linux 2)
+aws-psycopg2>=2.9.9
+
+# AWS SDK (included in Lambda runtime, but listed for clarity)
+boto3>=1.34.0
+
+# Utilities
+python-dateutil>=2.8.2
+

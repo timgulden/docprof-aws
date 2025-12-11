@@ -113,6 +113,28 @@ resource "aws_iam_role_policy" "lambda_s3" {
   })
 }
 
+# Policy for Secrets Manager access (get database password)
+resource "aws_iam_role_policy" "lambda_secretsmanager" {
+  name = "${var.project_name}-${var.environment}-lambda-secretsmanager"
+  role = aws_iam_role.lambda_execution.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "secretsmanager:GetSecretValue",
+          "secretsmanager:DescribeSecret"
+        ]
+        Resource = [
+          "arn:aws:secretsmanager:${var.aws_region}:${var.account_id}:secret:${var.project_name}-${var.environment}-*"
+        ]
+      }
+    ]
+  })
+}
+
 # Policy for Bedrock access (invoke models)
 resource "aws_iam_role_policy" "lambda_bedrock" {
   name = "${var.project_name}-${var.environment}-lambda-bedrock"
@@ -128,8 +150,89 @@ resource "aws_iam_role_policy" "lambda_bedrock" {
           "bedrock:InvokeModelWithResponseStream"
         ]
         Resource = [
+          # Inference profiles (required for on-demand Claude models)
+          # Claude Sonnet 4.5 (best balance, for classification and other tasks)
+          "arn:aws:bedrock:us-east-1:${var.account_id}:inference-profile/us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+          "arn:aws:bedrock:us-east-2:${var.account_id}:inference-profile/us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+          "arn:aws:bedrock:us-west-2:${var.account_id}:inference-profile/us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+          # Foundation models (direct access) - inference profiles route to these
+          "arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-sonnet-4-5-20250929-v1:0",
+          "arn:aws:bedrock:us-east-2::foundation-model/anthropic.claude-sonnet-4-5-20250929-v1:0",
+          "arn:aws:bedrock:us-west-2::foundation-model/anthropic.claude-sonnet-4-5-20250929-v1:0",
+          # Embeddings
+          "arn:aws:bedrock:${var.aws_region}::foundation-model/amazon.titan-embed-text-v1",
+          "arn:aws:bedrock:${var.aws_region}::foundation-model/amazon.titan-embed-text-v2:0"
+        ]
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "aws-marketplace:ViewSubscriptions",
+          "aws-marketplace:Subscribe"
+        ]
+        Resource = "*"
+      }
+    ]
+  })
+}
+
+# Policy for Marketplace access (required for Claude Sonnet 4.5 via Marketplace)
+resource "aws_iam_role_policy" "lambda_marketplace" {
+  name = "${var.project_name}-${var.environment}-lambda-marketplace"
+  role = aws_iam_role.lambda_execution.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "aws-marketplace:ViewSubscriptions",
+          "aws-marketplace:Subscribe"
+        ]
+        Resource = [
+          # Inference profiles (required for on-demand Claude models)
+          # Claude Opus 4.5 (highest quality, for figure descriptions)
+          "arn:aws:bedrock:us-east-1:${var.account_id}:inference-profile/us.anthropic.claude-opus-4-5-20251101-v1:0",
+          "arn:aws:bedrock:us-east-2:${var.account_id}:inference-profile/us.anthropic.claude-opus-4-5-20251101-v1:0",
+          "arn:aws:bedrock:us-west-2:${var.account_id}:inference-profile/us.anthropic.claude-opus-4-5-20251101-v1:0",
+          # Claude Sonnet 4.5 (best balance, for classification and other tasks)
+          "arn:aws:bedrock:us-east-1:${var.account_id}:inference-profile/us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+          "arn:aws:bedrock:us-east-2:${var.account_id}:inference-profile/us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+          "arn:aws:bedrock:us-west-2:${var.account_id}:inference-profile/us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+          # Claude Sonnet 4 (backup)
+          "arn:aws:bedrock:us-east-1:${var.account_id}:inference-profile/us.anthropic.claude-sonnet-4-20250514-v1:0",
+          "arn:aws:bedrock:us-west-2:${var.account_id}:inference-profile/us.anthropic.claude-sonnet-4-20250514-v1:0",
+          # Claude 3.7 Sonnet (backup)
+          "arn:aws:bedrock:us-east-1:${var.account_id}:inference-profile/us.anthropic.claude-3-7-sonnet-20250219-v1:0",
+          "arn:aws:bedrock:us-west-2:${var.account_id}:inference-profile/us.anthropic.claude-3-7-sonnet-20250219-v1:0",
+          # Claude 3.5 Sonnet (backup)
+          "arn:aws:bedrock:us-east-1:${var.account_id}:inference-profile/us.anthropic.claude-3-5-sonnet-20240620-v1:0",
+          "arn:aws:bedrock:us-west-2:${var.account_id}:inference-profile/us.anthropic.claude-3-5-sonnet-20240620-v1:0",
+          # Foundation models (direct access) - inference profiles route to these
+          # Claude Opus 4.5 (highest quality, for figure descriptions)
+          "arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-opus-4-5-20251101-v1:0",
+          "arn:aws:bedrock:us-east-2::foundation-model/anthropic.claude-opus-4-5-20251101-v1:0",
+          "arn:aws:bedrock:us-west-2::foundation-model/anthropic.claude-opus-4-5-20251101-v1:0",
+          # Claude Sonnet 4.5 (best balance, for classification)
+          "arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-sonnet-4-5-20250929-v1:0",
+          "arn:aws:bedrock:us-east-2::foundation-model/anthropic.claude-sonnet-4-5-20250929-v1:0",
+          "arn:aws:bedrock:us-west-2::foundation-model/anthropic.claude-sonnet-4-5-20250929-v1:0",
+          # Claude Sonnet 4
+          "arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-sonnet-4-20250514-v1:0",
+          "arn:aws:bedrock:us-west-2::foundation-model/anthropic.claude-sonnet-4-20250514-v1:0",
+          # Claude 3.7 Sonnet
+          "arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-3-7-sonnet-20250219-v1:0",
+          "arn:aws:bedrock:us-west-2::foundation-model/anthropic.claude-3-7-sonnet-20250219-v1:0",
+          # Claude 3.5 Sonnet
+          "arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-3-5-sonnet-20240620-v1:0",
+          "arn:aws:bedrock:us-west-2::foundation-model/anthropic.claude-3-5-sonnet-20240620-v1:0",
           "arn:aws:bedrock:${var.aws_region}::foundation-model/anthropic.claude-3-5-sonnet-20241022-v2:0",
           "arn:aws:bedrock:${var.aws_region}::foundation-model/anthropic.claude-3-5-sonnet-*",
+          # Claude 3 Sonnet (backup)
+          "arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-3-sonnet-20240229-v1:0",
+          "arn:aws:bedrock:us-west-2::foundation-model/anthropic.claude-3-sonnet-20240229-v1:0",
+          # Embeddings
           "arn:aws:bedrock:${var.aws_region}::foundation-model/amazon.titan-embed-text-v1",
           "arn:aws:bedrock:${var.aws_region}::foundation-model/amazon.titan-embed-text-v2:0"
         ]
@@ -176,6 +279,32 @@ resource "aws_iam_role_policy" "lambda_dynamodb" {
           "dynamodb:Scan"
         ]
         Resource = "arn:aws:dynamodb:${var.aws_region}:${var.account_id}:table/${var.project_name}-${var.environment}-sessions"
+      }
+    ]
+  })
+}
+
+# Policy for VPC endpoint management (AI services manager)
+resource "aws_iam_role_policy" "lambda_vpc_endpoints" {
+  name = "${var.project_name}-${var.environment}-lambda-vpc-endpoints"
+  role = aws_iam_role.lambda_execution.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "ec2:CreateVpcEndpoint",
+          "ec2:DeleteVpcEndpoints",
+          "ec2:DescribeVpcEndpoints",
+          "ec2:DescribeVpcs",
+          "ec2:DescribeSubnets",
+          "ec2:DescribeSecurityGroups",
+          "ec2:CreateTags",
+          "ec2:DeleteTags"
+        ]
+        Resource = "*"
       }
     ]
   })

@@ -100,6 +100,11 @@ resource "aws_rds_cluster_instance" "aurora" {
   # Parameter group
   db_parameter_group_name = aws_db_parameter_group.aurora_postgres.name
 
+  # Ignore monitoring_interval - it's set at cluster level for Serverless v2
+  lifecycle {
+    ignore_changes = [monitoring_interval]
+  }
+
   tags = merge(
     var.tags,
     {

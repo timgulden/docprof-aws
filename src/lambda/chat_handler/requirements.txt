@@ -1,0 +1,3 @@
+# Chat handler dependencies
+# Most dependencies are in the Lambda layer
+# This file is for handler-specific dependencies if needed

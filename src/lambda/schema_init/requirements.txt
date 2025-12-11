@@ -1,0 +1,3 @@
+# Schema Init Lambda - No additional dependencies
+# Uses shared modules which are packaged with the Lambda
+
