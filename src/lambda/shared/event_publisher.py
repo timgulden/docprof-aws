@@ -8,7 +8,7 @@ import json
 import boto3
 import logging
 from typing import Dict, Any, Optional, List
-from datetime import datetime
+from datetime import datetime, date
 
 logger = logging.getLogger(__name__)
 
@@ -16,9 +16,33 @@ logger = logging.getLogger(__name__)
 eventbridge = boto3.client('events')
 
 # Event bus name (will be set by environment variable from Terraform)
+# Using default bus - set EVENT_BUS_NAME to empty string or omit to use default bus
 import os
-EVENT_BUS_NAME = os.getenv('EVENT_BUS_NAME', 'docprof-dev-course-events')
+EVENT_BUS_NAME_ENV = os.getenv('EVENT_BUS_NAME', '').strip()
+# Use default bus if EVENT_BUS_NAME is empty, None, or 'default'
+EVENT_BUS_NAME = None if not EVENT_BUS_NAME_ENV or EVENT_BUS_NAME_ENV.lower() == 'default' else EVENT_BUS_NAME_ENV
 SOURCE = 'docprof.course'
+
+
+def _serialize_for_json(obj: Any) -> Any:
+    """
+    Recursively serialize objects for JSON encoding.
+    Handles datetime, date, and other non-serializable types.
+    """
+    if isinstance(obj, (datetime, date)):
+        return obj.isoformat()
+    elif isinstance(obj, dict):
+        return {k: _serialize_for_json(v) for k, v in obj.items()}
+    elif isinstance(obj, list):
+        return [_serialize_for_json(item) for item in obj]
+    elif isinstance(obj, (int, float, str, bool, type(None))):
+        return obj
+    else:
+        # Try to convert to string as fallback
+        try:
+            return str(obj)
+        except Exception:
+            return None
 
 
 def publish_course_event(
@@ -43,27 +67,44 @@ def publish_course_event(
         }
         
         if data:
-            detail.update(data)
+            # Serialize data to handle datetime objects
+            serialized_data = _serialize_for_json(data)
+            detail.update(serialized_data)
         
         if state_snapshot:
-            detail['state_snapshot'] = state_snapshot
+            detail['state_snapshot'] = _serialize_for_json(state_snapshot)
         
-        response = eventbridge.put_events(
-            Entries=[
-                {
-                    'Source': SOURCE,
-                    'DetailType': event_type,
-                    'Detail': json.dumps(detail),
-                    'EventBusName': EVENT_BUS_NAME,
-                }
-            ]
-        )
+        event_entry = {
+            'Source': SOURCE,
+            'DetailType': event_type,
+            'Detail': json.dumps(detail),
+        }
+        # Only include EventBusName if using a custom bus (not default)
+        if EVENT_BUS_NAME:
+            event_entry['EventBusName'] = EVENT_BUS_NAME
         
-        if response['FailedEntryCount'] > 0:
-            logger.error(f"Failed to publish event {event_type}: {response['Entries']}")
-            raise Exception(f"EventBridge publish failed: {response['Entries']}")
+        bus_name_display = EVENT_BUS_NAME or 'default'
+        logger.info(f"Publishing event to EventBridge: Source={SOURCE}, DetailType={event_type}, EventBusName={bus_name_display}")
+        logger.debug(f"Event detail keys: {list(detail.keys())}")
         
-        logger.info(f"Published event: {event_type} for course {course_id}")
+        try:
+            response = eventbridge.put_events(
+                Entries=[event_entry]
+            )
+            
+            logger.info(f"put_events response: FailedEntryCount={response.get('FailedEntryCount', 0)}, Entries={len(response.get('Entries', []))}")
+            
+            if response['FailedEntryCount'] > 0:
+                error_details = response['Entries'][0] if response['Entries'] else {}
+                logger.error(f"Failed to publish event {event_type}: {error_details}")
+                raise Exception(f"EventBridge publish failed: {error_details}")
+            
+            event_id = response['Entries'][0].get('EventId', 'unknown') if response['Entries'] else 'unknown'
+            logger.info(f"Published event: {event_type} for course {course_id}, EventId: {event_id}")
+            
+        except Exception as e:
+            logger.error(f"Exception during put_events: {e}", exc_info=True)
+            raise
         
     except Exception as e:
         logger.error(f"Error publishing event {event_type}: {e}", exc_info=True)

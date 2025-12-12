@@ -901,6 +901,20 @@ module "api_gateway" {
       path                = "courses"
       require_auth        = false  # TODO: Add Cognito auth in prod
     }
+    course_get = {
+      method              = "GET"
+      lambda_function_name = module.course_retriever_lambda.function_name
+      lambda_invoke_arn   = module.course_retriever_lambda.function_invoke_arn
+      path                = "course"
+      require_auth        = false  # TODO: Add Cognito auth in prod
+    }
+    course_status = {
+      method              = "GET"
+      lambda_function_name = module.course_status_handler_lambda.function_name
+      lambda_invoke_arn   = module.course_status_handler_lambda.function_invoke_arn
+      path                = "course-status/{courseId}"
+      require_auth        = false  # TODO: Add Cognito auth in prod
+    }
   }
 
   tags = {
@@ -911,7 +925,9 @@ module "api_gateway" {
     module.book_upload_lambda,
     module.ai_services_manager_lambda,
     module.chat_handler_lambda,
-    module.course_request_handler_lambda
+    module.course_request_handler_lambda,
+    module.course_retriever_lambda,
+    module.course_status_handler_lambda
   ]
 }
 
@@ -939,8 +955,12 @@ module "course_request_handler_lambda" {
 
   environment_variables = {
     DYNAMODB_COURSE_STATE_TABLE_NAME = module.dynamodb_course_state.table_name
-    EVENT_BUS_NAME                   = module.eventbridge.event_bus_name
+    # EVENT_BUS_NAME removed - using default bus instead
     AWS_ACCOUNT_ID                   = data.aws_caller_identity.current.account_id
+    DB_CLUSTER_ENDPOINT              = module.aurora.cluster_endpoint
+    DB_NAME                          = module.aurora.database_name
+    DB_MASTER_USERNAME               = module.aurora.master_username
+    DB_PASSWORD_SECRET_ARN           = module.aurora.master_password_secret_arn
   }
 
   vpc_config = {
@@ -957,6 +977,84 @@ module "course_request_handler_lambda" {
     module.dynamodb_course_state,
     module.eventbridge,
     module.vpc,
+    module.iam,
+    module.lambda_layer,
+    module.aurora
+  ]
+}
+
+# Course Retriever Lambda - GET course by ID
+module "course_retriever_lambda" {
+  source = "../../modules/lambda"
+
+  project_name = local.project_name
+  environment  = local.environment
+  function_name = "course-retriever"
+
+  handler = "handler.lambda_handler"
+  runtime = "python3.11"
+  timeout = 30  # Quick database query
+  memory_size = 256
+
+  source_path = "${path.module}/../../../src/lambda/course_retriever"
+
+  role_arn = module.iam.lambda_execution_role_arn
+  layers = [module.lambda_layer.layer_arn]
+
+  environment_variables = {
+    DB_CLUSTER_ENDPOINT     = module.aurora.cluster_endpoint
+    DB_NAME                 = module.aurora.database_name
+    DB_MASTER_USERNAME      = module.aurora.master_username
+    DB_PASSWORD_SECRET_ARN  = module.aurora.master_password_secret_arn
+  }
+
+  vpc_config = {
+    subnet_ids         = module.vpc.private_subnet_ids
+    security_group_ids = [module.vpc.lambda_security_group_id]
+  }
+
+  tags = {
+    Component = "course"
+    Function  = "retriever"
+  }
+
+  depends_on = [
+    module.aurora,
+    module.vpc,
+    module.iam,
+    module.lambda_layer
+  ]
+}
+
+# Course Status Handler Lambda - GET course generation status
+module "course_status_handler_lambda" {
+  source = "../../modules/lambda"
+
+  project_name = local.project_name
+  environment  = local.environment
+  function_name = "course-status-handler"
+
+  handler = "handler.lambda_handler"
+  runtime = "python3.11"
+  timeout = 10  # Quick DynamoDB query
+  memory_size = 256
+
+  source_path = "${path.module}/../../../src/lambda/course_status_handler"
+
+  role_arn = module.iam.lambda_execution_role_arn
+  layers = [module.lambda_layer.layer_arn]
+
+  environment_variables = {
+    DYNAMODB_COURSE_STATE_TABLE_NAME = module.dynamodb_course_state.table_name
+  }
+
+  tags = {
+    Component = "course"
+    Function  = "status-handler"
+  }
+
+  depends_on = [
+    module.dynamodb_course_state,
     module.iam,
     module.lambda_layer
   ]
@@ -982,8 +1080,12 @@ module "course_embedding_handler_lambda" {
 
   environment_variables = {
     DYNAMODB_COURSE_STATE_TABLE_NAME = module.dynamodb_course_state.table_name
-    EVENT_BUS_NAME                   = module.eventbridge.event_bus_name
+    # EVENT_BUS_NAME removed - using default bus instead
     AWS_ACCOUNT_ID                   = data.aws_caller_identity.current.account_id
+    DB_CLUSTER_ENDPOINT              = module.aurora.cluster_endpoint
+    DB_NAME                          = module.aurora.database_name
+    DB_MASTER_USERNAME               = module.aurora.master_username
+    DB_PASSWORD_SECRET_ARN           = module.aurora.master_password_secret_arn
   }
 
   vpc_config = {
@@ -1025,8 +1127,12 @@ module "course_book_search_handler_lambda" {
 
   environment_variables = {
     DYNAMODB_COURSE_STATE_TABLE_NAME = module.dynamodb_course_state.table_name
-    EVENT_BUS_NAME                   = module.eventbridge.event_bus_name
+    # EVENT_BUS_NAME removed - using default bus instead
     AWS_ACCOUNT_ID                   = data.aws_caller_identity.current.account_id
+    DB_CLUSTER_ENDPOINT              = module.aurora.cluster_endpoint
+    DB_NAME                          = module.aurora.database_name
+    DB_MASTER_USERNAME               = module.aurora.master_username
+    DB_PASSWORD_SECRET_ARN           = module.aurora.master_password_secret_arn
   }
 
   vpc_config = {
@@ -1068,8 +1174,12 @@ module "course_parts_handler_lambda" {
 
   environment_variables = {
     DYNAMODB_COURSE_STATE_TABLE_NAME = module.dynamodb_course_state.table_name
-    EVENT_BUS_NAME                   = module.eventbridge.event_bus_name
+    # EVENT_BUS_NAME removed - using default bus instead
     AWS_ACCOUNT_ID                   = data.aws_caller_identity.current.account_id
+    DB_CLUSTER_ENDPOINT              = module.aurora.cluster_endpoint
+    DB_NAME                          = module.aurora.database_name
+    DB_MASTER_USERNAME               = module.aurora.master_username
+    DB_PASSWORD_SECRET_ARN           = module.aurora.master_password_secret_arn
   }
 
   vpc_config = {
@@ -1111,8 +1221,12 @@ module "course_sections_handler_lambda" {
 
   environment_variables = {
     DYNAMODB_COURSE_STATE_TABLE_NAME = module.dynamodb_course_state.table_name
-    EVENT_BUS_NAME                   = module.eventbridge.event_bus_name
+    # EVENT_BUS_NAME removed - using default bus instead
     AWS_ACCOUNT_ID                   = data.aws_caller_identity.current.account_id
+    DB_CLUSTER_ENDPOINT              = module.aurora.cluster_endpoint
+    DB_NAME                          = module.aurora.database_name
+    DB_MASTER_USERNAME               = module.aurora.master_username
+    DB_PASSWORD_SECRET_ARN           = module.aurora.master_password_secret_arn
   }
 
   vpc_config = {
@@ -1154,8 +1268,12 @@ module "course_outline_reviewer_lambda" {
 
   environment_variables = {
     DYNAMODB_COURSE_STATE_TABLE_NAME = module.dynamodb_course_state.table_name
-    EVENT_BUS_NAME                   = module.eventbridge.event_bus_name
+    # EVENT_BUS_NAME removed - using default bus instead
     AWS_ACCOUNT_ID                   = data.aws_caller_identity.current.account_id
+    DB_CLUSTER_ENDPOINT              = module.aurora.cluster_endpoint
+    DB_NAME                          = module.aurora.database_name
+    DB_MASTER_USERNAME               = module.aurora.master_username
+    DB_PASSWORD_SECRET_ARN           = module.aurora.master_password_secret_arn
   }
 
   vpc_config = {
@@ -1201,7 +1319,7 @@ module "course_storage_handler_lambda" {
     DB_NAME                           = module.aurora.database_name
     DB_MASTER_USERNAME                = module.aurora.master_username
     DB_PASSWORD_SECRET_ARN            = module.aurora.master_password_secret_arn
-    EVENT_BUS_NAME                   = module.eventbridge.event_bus_name
+    # EVENT_BUS_NAME removed - using default bus instead
     AWS_ACCOUNT_ID                   = data.aws_caller_identity.current.account_id
     # Note: AWS_REGION is automatically set by Lambda runtime - don't set it manually
   }
@@ -1227,13 +1345,116 @@ module "course_storage_handler_lambda" {
 }
 
 # ============================================================================
+# Source Summary Generator Lambda
+# ============================================================================
+
+module "source_summary_generator_lambda" {
+  source = "../../modules/lambda"
+
+  project_name = local.project_name
+  environment  = local.environment
+  function_name = "source-summary-generator"
+
+  handler = "handler.lambda_handler"
+  runtime = "python3.11"
+  timeout = 900  # 15 minutes (max for Lambda) - may need multiple chapters
+  memory_size = 2048  # 2GB for PDF processing and LLM calls
+
+  source_path = "${path.module}/../../../src/lambda/source_summary_generator"
+
+  # Use shared Lambda execution role
+  role_arn = module.iam.lambda_execution_role_arn
+
+  # Attach Python dependencies layer
+  layers = [module.lambda_layer.layer_arn]
+
+  environment_variables = {
+    SOURCE_BUCKET            = module.s3.source_docs_bucket_name
+    DB_CLUSTER_ENDPOINT      = module.aurora.cluster_endpoint
+    DB_NAME                  = module.aurora.database_name
+    DB_MASTER_USERNAME       = module.aurora.master_username
+    DB_PASSWORD_SECRET_ARN  = module.aurora.master_password_secret_arn
+    # EVENT_BUS_NAME removed - using default bus instead
+    AWS_ACCOUNT_ID          = data.aws_caller_identity.current.account_id
+  }
+
+  vpc_config = {
+    subnet_ids         = module.vpc.private_subnet_ids
+    security_group_ids = [module.vpc.lambda_security_group_id]
+  }
+
+  tags = {
+    Component = "ingestion"
+    Function  = "source-summary-generator"
+  }
+
+  depends_on = [
+    module.aurora,
+    module.eventbridge,
+    module.vpc,
+    module.iam,
+    module.lambda_layer
+  ]
+}
+
+# ============================================================================
+# Source Summary Embedding Generator Lambda
+# ============================================================================
+
+module "source_summary_embedding_generator_lambda" {
+  source = "../../modules/lambda"
+
+  project_name = local.project_name
+  environment  = local.environment
+  function_name = "source-summary-embedding-generator"
+
+  handler = "handler.lambda_handler"
+  runtime = "python3.11"
+  timeout = 300  # 5 minutes
+  memory_size = 512  # Smaller memory - just embedding generation
+
+  source_path = "${path.module}/../../../src/lambda/source_summary_embedding_generator"
+
+  # Use shared Lambda execution role
+  role_arn = module.iam.lambda_execution_role_arn
+
+  # Attach Python dependencies layer
+  layers = [module.lambda_layer.layer_arn]
+
+  environment_variables = {
+    DB_CLUSTER_ENDPOINT      = module.aurora.cluster_endpoint
+    DB_NAME                  = module.aurora.database_name
+    DB_MASTER_USERNAME       = module.aurora.master_username
+    DB_PASSWORD_SECRET_ARN   = module.aurora.master_password_secret_arn
+    AWS_ACCOUNT_ID           = data.aws_caller_identity.current.account_id
+  }
+
+  vpc_config = {
+    subnet_ids         = module.vpc.private_subnet_ids
+    security_group_ids = [module.vpc.lambda_security_group_id]
+  }
+
+  tags = {
+    Component = "ingestion"
+    Function  = "source-summary-embedding-generator"
+  }
+
+  depends_on = [
+    module.aurora,
+    module.vpc,
+    module.iam,
+    module.lambda_layer
+  ]
+}
+
+# ============================================================================
 # EventBridge Targets - Connect Rules to Lambda Functions
 # ============================================================================
 
 # EmbeddingGenerated → Embedding Handler
 resource "aws_cloudwatch_event_target" "embedding_generated" {
   rule           = module.eventbridge.embedding_generated_rule_name
-  event_bus_name = module.eventbridge.event_bus_name
+  # event_bus_name omitted - using default bus
   target_id      = "CourseEmbeddingHandler"
   arn            = module.course_embedding_handler_lambda.function_arn
 
@@ -1246,7 +1467,7 @@ resource "aws_cloudwatch_event_target" "embedding_generated" {
 # BookSummariesFound → Book Search Handler
 resource "aws_cloudwatch_event_target" "book_summaries_found" {
   rule           = module.eventbridge.book_summaries_found_rule_name
-  event_bus_name = module.eventbridge.event_bus_name
+  # event_bus_name omitted - using default bus
   target_id      = "CourseBookSearchHandler"
   arn            = module.course_book_search_handler_lambda.function_arn
 
@@ -1259,7 +1480,7 @@ resource "aws_cloudwatch_event_target" "book_summaries_found" {
 # PartsGenerated → Parts Handler
 resource "aws_cloudwatch_event_target" "parts_generated" {
   rule           = module.eventbridge.parts_generated_rule_name
-  event_bus_name = module.eventbridge.event_bus_name
+  # event_bus_name omitted - using default bus
   target_id      = "CoursePartsHandler"
   arn            = module.course_parts_handler_lambda.function_arn
 
@@ -1272,7 +1493,7 @@ resource "aws_cloudwatch_event_target" "parts_generated" {
 # PartSectionsGenerated → Sections Handler
 resource "aws_cloudwatch_event_target" "part_sections_generated" {
   rule           = module.eventbridge.part_sections_generated_rule_name
-  event_bus_name = module.eventbridge.event_bus_name
+  # event_bus_name omitted - using default bus
   target_id      = "CourseSectionsHandler"
   arn            = module.course_sections_handler_lambda.function_arn
 
@@ -1285,7 +1506,7 @@ resource "aws_cloudwatch_event_target" "part_sections_generated" {
 # AllPartsComplete → Outline Reviewer Handler
 resource "aws_cloudwatch_event_target" "all_parts_complete" {
   rule           = module.eventbridge.all_parts_complete_rule_name
-  event_bus_name = module.eventbridge.event_bus_name
+  # event_bus_name omitted - using default bus
   target_id      = "CourseOutlineReviewer"
   arn            = module.course_outline_reviewer_lambda.function_arn
 
@@ -1298,12 +1519,38 @@ resource "aws_cloudwatch_event_target" "all_parts_complete" {
 # OutlineReview → Storage Handler
 resource "aws_cloudwatch_event_target" "outline_reviewed" {
   rule           = module.eventbridge.outline_reviewed_rule_name
-  event_bus_name = module.eventbridge.event_bus_name
+  # event_bus_name omitted - using default bus
   target_id      = "CourseStorageHandler"
   arn            = module.course_storage_handler_lambda.function_arn
 
   depends_on = [
     module.course_storage_handler_lambda,
+    module.eventbridge
+  ]
+}
+
+# DocumentProcessed → Source Summary Generator
+resource "aws_cloudwatch_event_target" "document_processed" {
+  rule           = module.eventbridge.document_processed_rule_name
+  # event_bus_name omitted - using default bus
+  target_id      = "SourceSummaryGenerator"
+  arn            = module.source_summary_generator_lambda.function_arn
+
+  depends_on = [
+    module.source_summary_generator_lambda,
+    module.eventbridge
+  ]
+}
+
+# SourceSummaryStored → Embedding Generator
+resource "aws_cloudwatch_event_target" "source_summary_stored" {
+  rule           = module.eventbridge.source_summary_stored_rule_name
+  # event_bus_name omitted - using default bus
+  target_id      = "SourceSummaryEmbeddingGenerator"
+  arn            = module.source_summary_embedding_generator_lambda.function_arn
+
+  depends_on = [
+    module.source_summary_embedding_generator_lambda,
     module.eventbridge
   ]
 }
@@ -1337,7 +1584,8 @@ resource "aws_lambda_permission" "eventbridge_invoke_embedding" {
   action        = "lambda:InvokeFunction"
   function_name = module.course_embedding_handler_lambda.function_name
   principal     = "events.amazonaws.com"
-  source_arn    = "${module.eventbridge.event_bus_arn}/*"
+  # Use rule ARN for default bus (rule ARN format: arn:aws:events:region:account-id:rule/rule-name)
+  source_arn    = "arn:aws:events:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:rule/${module.eventbridge.embedding_generated_rule_name}"
 }
 
 resource "aws_lambda_permission" "eventbridge_invoke_book_search" {
@@ -1345,7 +1593,8 @@ resource "aws_lambda_permission" "eventbridge_invoke_book_search" {
   action        = "lambda:InvokeFunction"
   function_name = module.course_book_search_handler_lambda.function_name
   principal     = "events.amazonaws.com"
-  source_arn    = "${module.eventbridge.event_bus_arn}/*"
+  # Use rule ARN for default bus
+  source_arn    = "arn:aws:events:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:rule/${module.eventbridge.book_summaries_found_rule_name}"
 }
 
 resource "aws_lambda_permission" "eventbridge_invoke_parts" {
@@ -1353,7 +1602,8 @@ resource "aws_lambda_permission" "eventbridge_invoke_parts" {
   action        = "lambda:InvokeFunction"
   function_name = module.course_parts_handler_lambda.function_name
   principal     = "events.amazonaws.com"
-  source_arn    = "${module.eventbridge.event_bus_arn}/*"
+  # Use rule ARN for default bus
+  source_arn    = "arn:aws:events:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:rule/${module.eventbridge.parts_generated_rule_name}"
 }
 
 resource "aws_lambda_permission" "eventbridge_invoke_sections" {
@@ -1361,7 +1611,8 @@ resource "aws_lambda_permission" "eventbridge_invoke_sections" {
   action        = "lambda:InvokeFunction"
   function_name = module.course_sections_handler_lambda.function_name
   principal     = "events.amazonaws.com"
-  source_arn    = "${module.eventbridge.event_bus_arn}/*"
+  # Use rule ARN for default bus
+  source_arn    = "arn:aws:events:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:rule/${module.eventbridge.part_sections_generated_rule_name}"
 }
 
 resource "aws_lambda_permission" "eventbridge_invoke_outline_reviewer" {
@@ -1369,7 +1620,8 @@ resource "aws_lambda_permission" "eventbridge_invoke_outline_reviewer" {
   action        = "lambda:InvokeFunction"
   function_name = module.course_outline_reviewer_lambda.function_name
   principal     = "events.amazonaws.com"
-  source_arn    = "${module.eventbridge.event_bus_arn}/*"
+  # Use rule ARN for default bus
+  source_arn    = "arn:aws:events:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:rule/${module.eventbridge.all_parts_complete_rule_name}"
 }
 
 resource "aws_lambda_permission" "eventbridge_invoke_storage" {
@@ -1377,7 +1629,24 @@ resource "aws_lambda_permission" "eventbridge_invoke_storage" {
   action        = "lambda:InvokeFunction"
   function_name = module.course_storage_handler_lambda.function_name
   principal     = "events.amazonaws.com"
-  source_arn    = "${module.eventbridge.event_bus_arn}/*"
+  # Use rule ARN for default bus
+  source_arn    = "arn:aws:events:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:rule/${module.eventbridge.outline_reviewed_rule_name}"
+}
+
+resource "aws_lambda_permission" "eventbridge_invoke_source_summary_generator" {
+  statement_id  = "AllowExecutionFromEventBridge-DocumentProcessed"
+  action        = "lambda:InvokeFunction"
+  function_name = module.source_summary_generator_lambda.function_name
+  principal     = "events.amazonaws.com"
+  source_arn    = "${module.eventbridge.event_bus_arn}/*/${module.eventbridge.document_processed_rule_name}"
+}
+
+resource "aws_lambda_permission" "eventbridge_invoke_source_summary_embedding_generator" {
+  statement_id  = "AllowExecutionFromEventBridge-SourceSummaryStored"
+  action        = "lambda:InvokeFunction"
+  function_name = module.source_summary_embedding_generator_lambda.function_name
+  principal     = "events.amazonaws.com"
+  source_arn    = "${module.eventbridge.event_bus_arn}/*/${module.eventbridge.source_summary_stored_rule_name}"
 }
 
 # Outputs will be defined in outputs.tf

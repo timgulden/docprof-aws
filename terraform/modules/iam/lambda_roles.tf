@@ -278,7 +278,37 @@ resource "aws_iam_role_policy" "lambda_dynamodb" {
           "dynamodb:Query",
           "dynamodb:Scan"
         ]
-        Resource = "arn:aws:dynamodb:${var.aws_region}:${var.account_id}:table/${var.project_name}-${var.environment}-sessions"
+        Resource = [
+          "arn:aws:dynamodb:${var.aws_region}:${var.account_id}:table/${var.project_name}-${var.environment}-sessions",
+          "arn:aws:dynamodb:${var.aws_region}:${var.account_id}:table/${var.project_name}-${var.environment}-sessions/*",
+          "arn:aws:dynamodb:${var.aws_region}:${var.account_id}:table/${var.project_name}-${var.environment}-course-state",
+          "arn:aws:dynamodb:${var.aws_region}:${var.account_id}:table/${var.project_name}-${var.environment}-course-state/*"
+        ]
+      }
+    ]
+  })
+}
+
+# Policy for EventBridge access (publish course generation events)
+# Supports both custom bus and default bus (for migration to default bus)
+resource "aws_iam_role_policy" "lambda_eventbridge" {
+  name = "${var.project_name}-${var.environment}-lambda-eventbridge"
+  role = aws_iam_role.lambda_execution.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "events:PutEvents"
+        ]
+        Resource = [
+          # Custom event bus (legacy, may be removed after migration)
+          "arn:aws:events:${var.aws_region}:${var.account_id}:event-bus/${var.project_name}-${var.environment}-course-events",
+          # Default event bus (current)
+          "arn:aws:events:${var.aws_region}:${var.account_id}:event-bus/default"
+        ]
       }
     ]
   })

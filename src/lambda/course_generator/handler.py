@@ -35,8 +35,23 @@ from shared.logic.courses import (
     request_course,
 )
 from shared.core.course_models import CoursePreferences, CourseState
-from shared.core.course_events import CourseRequestedEvent
-from shared.core.commands import LLMCommand, EmbedCommand, SearchBookSummariesCommand
+from shared.core.course_events import (
+    CourseRequestedEvent,
+    EmbeddingGeneratedEvent,
+    BookSummariesFoundEvent,
+    PartsGeneratedEvent,
+    PartSectionsGeneratedEvent,
+    AllPartsCompleteEvent,
+    OutlineReviewEvent,
+    CourseStoredEvent,
+)
+from shared.core.commands import (
+    LLMCommand,
+    EmbedCommand,
+    SearchBookSummariesCommand,
+    CreateCourseCommand,
+)
+from shared.command_executor import execute_command
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -83,60 +98,138 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         )
         
         # Process course request through logic layer
-        result = reduce_course_event(course_state, course_event)
+        current_state = course_state
+        current_result = reduce_course_event(current_state, course_event)
+        current_state = current_result.new_state
         
-        # Execute commands (effects)
-        # For now, we'll handle the first command (EmbedCommand)
-        # In a full implementation, this would be a command executor pattern
-        commands_executed = []
-        for command in result.commands:
+        # Execute commands iteratively until pipeline completes
+        max_iterations = 20  # Prevent infinite loops (increased for multi-phase generation)
+        iteration = 0
+        
+        while current_result.commands and iteration < max_iterations:
+            iteration += 1
+            logger.info(f"Pipeline iteration {iteration}, executing {len(current_result.commands)} command(s)")
+            
+            # Execute first command and continue pipeline
+            # (Commands are typically sequential, not parallel)
+            command = current_result.commands[0]
+            logger.info(f"Executing command: {command.command_name}")
+            command_result = execute_command(command, state=current_state)
+            
+            # Handle command results and continue pipeline
             if isinstance(command, EmbedCommand):
-                # Generate embedding
-                embedding = generate_embeddings(command.text)
-                commands_executed.append({
-                    'type': 'embedding_generated',
-                    'embedding': embedding
-                })
-                # TODO: Continue pipeline with embedding
-                # This would trigger the next step in the course generation flow
-            elif isinstance(command, LLMCommand):
-                # Call LLM with prompt
-                if command.prompt_name:
-                    # Use prompt registry (would need to import get_prompt)
-                    # For now, return command info
-                    commands_executed.append({
-                        'type': 'llm_command',
-                        'prompt_name': command.prompt_name,
-                        'prompt_variables': command.prompt_variables
-                    })
+                if command_result.get('status') == 'success' and 'embedding' in command_result:
+                    embedding = command_result['embedding']
+                    logger.info(f"Generated embedding (length: {len(embedding)})")
+                    # Continue pipeline with embedding
+                    embedding_event = EmbeddingGeneratedEvent(embedding=embedding)
+                    current_result = reduce_course_event(current_state, embedding_event)
+                    current_state = current_result.new_state
                 else:
-                    # Use inline prompt
-                    response = invoke_claude(
-                        messages=[{"role": "user", "content": command.prompt}],
-                        max_tokens=command.max_tokens,
-                        temperature=command.temperature,
-                        stream=False
-                    )
-                    commands_executed.append({
-                        'type': 'llm_response',
-                        'content': response.get('content', '')
-                    })
+                    logger.error(f"Embedding generation failed: {command_result.get('error')}")
+                    break
+            
             elif isinstance(command, SearchBookSummariesCommand):
-                # Search book summaries
-                # TODO: Implement book summary search
-                commands_executed.append({
-                    'type': 'book_search',
-                    'query_embedding': command.query_embedding[:5]  # Sample
-                })
+                if command_result.get('status') == 'success':
+                    books = command_result.get('books', [])
+                    logger.info(f"Found {len(books)} relevant books")
+                    for book in books[:3]:  # Log first 3 books
+                        logger.info(f"  - {book.get('book_title', 'Unknown')} (similarity: {book.get('similarity', 0):.3f})")
+                    # Continue pipeline with book summaries
+                    books_event = BookSummariesFoundEvent(books=books)
+                    current_result = reduce_course_event(current_state, books_event)
+                    current_state = current_result.new_state
+                else:
+                    logger.error(f"Book search failed: {command_result.get('error')}")
+                    # Continue with empty books list
+                    books_event = BookSummariesFoundEvent(books=[])
+                    current_result = reduce_course_event(current_state, books_event)
+                    current_state = current_result.new_state
+            
+            elif isinstance(command, LLMCommand):
+                # Convert LLM command result to appropriate event based on task
+                if command_result.get('status') == 'success' and 'content' in command_result:
+                    content = command_result['content']
+                    task = command.task or ''
+                    
+                    logger.info(f"LLM command executed successfully, task: {task}")
+                    
+                    # Convert LLM result to event based on task type
+                    if task == 'generate_course_parts':
+                        # Phase 1: Parts structure generated
+                        event = PartsGeneratedEvent(parts_text=content)
+                        logger.info("Converting LLM result to PartsGeneratedEvent")
+                        current_result = reduce_course_event(current_state, event)
+                        current_state = current_result.new_state
+                        
+                    elif task == 'generate_part_sections':
+                        # Phase 2-N: Sections for a part generated
+                        # Extract part_index from prompt_variables
+                        part_index = command.prompt_variables.get('part_index', 0)
+                        event = PartSectionsGeneratedEvent(
+                            sections_text=content,
+                            part_index=part_index
+                        )
+                        logger.info(f"Converting LLM result to PartSectionsGeneratedEvent (part_index={part_index})")
+                        current_result = reduce_course_event(current_state, event)
+                        current_state = current_result.new_state
+                        
+                    elif task == 'review_outline':
+                        # Phase N+1: Outline review completed
+                        event = OutlineReviewEvent(reviewed_outline_text=content)
+                        logger.info("Converting LLM result to OutlineReviewEvent")
+                        current_result = reduce_course_event(current_state, event)
+                        current_state = current_result.new_state
+                        
+                    else:
+                        # Unknown task - log warning but don't break
+                        # Some LLM commands might not produce events (e.g., other use cases)
+                        logger.warning(f"LLM command with unknown task '{task}' - no event conversion")
+                        # Don't break - might be handled elsewhere or complete pipeline
+                        
+                else:
+                    # LLM command failed
+                    error_msg = command_result.get('error', 'Unknown error')
+                    logger.error(f"LLM command failed: {error_msg}")
+                    # Create error event to stop pipeline gracefully
+                    from shared.core.course_events import CourseEventError
+                    error_event = CourseEventError(error_message=error_msg)
+                    current_result = reduce_course_event(current_state, error_event)
+                    current_state = current_result.new_state
+            
+            elif isinstance(command, CreateCourseCommand):
+                # Convert CreateCourseCommand result to CourseStoredEvent
+                if command_result.get('status') == 'success':
+                    course_id = command_result.get('course_id', '')
+                    logger.info(f"Course created successfully: {course_id}")
+                    event = CourseStoredEvent(course_id=course_id)
+                    current_result = reduce_course_event(current_state, event)
+                    current_state = current_result.new_state
+                else:
+                    error_msg = command_result.get('error', 'Failed to create course')
+                    logger.error(f"Course creation failed: {error_msg}")
+                    from shared.core.course_events import CourseEventError
+                    error_event = CourseEventError(error_message=error_msg)
+                    current_result = reduce_course_event(current_state, error_event)
+                    current_state = current_result.new_state
+            
+            # If no new commands, pipeline is complete
+            if not current_result.commands:
+                logger.info("Pipeline complete - no more commands")
+                break
+        
+        if iteration >= max_iterations:
+            logger.warning(f"Pipeline reached max iterations ({max_iterations}), may be incomplete")
         
         # Return response
         return success_response({
             'session_id': course_state.session_id,
-            'ui_message': result.ui_message,
-            'commands_executed': len(commands_executed),
+            'ui_message': current_result.ui_message,
+            'iterations': iteration,
             'state': {
-                'pending_course_query': result.new_state.pending_course_query,
-                'pending_course_hours': result.new_state.pending_course_hours,
+                'pending_course_query': current_state.pending_course_query,
+                'pending_course_hours': current_state.pending_course_hours,
+                'pending_book_search': current_state.pending_book_search if hasattr(current_state, 'pending_book_search') else False,
             }
         })
         

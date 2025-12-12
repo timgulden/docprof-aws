@@ -258,6 +258,7 @@ def create_schema(conn_info: Dict[str, Any]) -> None:
                 summary_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
                 book_id UUID NOT NULL REFERENCES books(book_id) ON DELETE CASCADE,
                 summary_json JSONB NOT NULL,
+                embedding vector(1536),  -- For vector similarity search
                 generated_at TIMESTAMP DEFAULT NOW(),
                 generated_by TEXT,
                 version INTEGER DEFAULT 1,
@@ -267,8 +268,21 @@ def create_schema(conn_info: Dict[str, Any]) -> None:
             CREATE INDEX IF NOT EXISTS source_summaries_book_idx ON source_summaries(book_id);
             CREATE INDEX IF NOT EXISTS source_summaries_generated_at_idx ON source_summaries(generated_at);
             CREATE UNIQUE INDEX IF NOT EXISTS source_summaries_book_version_idx ON source_summaries(book_id, version);
+            
+            -- Vector index for similarity search (only if embedding column exists)
+            DO $$
+            BEGIN
+                IF EXISTS (
+                    SELECT 1 FROM information_schema.columns 
+                    WHERE table_name = 'source_summaries' AND column_name = 'embedding'
+                ) THEN
+                    CREATE INDEX IF NOT EXISTS source_summaries_embedding_idx ON source_summaries 
+                        USING ivfflat (embedding vector_cosine_ops)
+                        WITH (lists = 10);  -- Fewer lists since fewer sources than chunks
+                END IF;
+            END $$;
         """)
-        print("✓ source_summaries table created")
+        print("✓ source_summaries table created with embedding support")
         
         # Create courses table (for course system)
         print("Creating courses table...")

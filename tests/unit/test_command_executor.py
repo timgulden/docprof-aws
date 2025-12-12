@@ -202,44 +202,138 @@ class TestSearchCorpusCommand:
 class TestCreateCourseCommand:
     """Test CreateCourseCommand execution."""
     
-    def test_execute_create_course_command_not_implemented(self):
-        """Test that course creation returns success (not yet implemented)."""
-        from shared.core.course_models import Course
+    @patch('shared.command_executor.get_db_connection')
+    def test_execute_create_course_command_success(self, mock_get_db_connection):
+        """Test successful course creation."""
+        from shared.core.course_models import Course, CoursePreferences
+        from datetime import datetime
+        import uuid
+        
+        # Setup mock database connection
+        mock_conn = MagicMock()
+        mock_cur = MagicMock()
+        mock_conn.cursor.return_value.__enter__.return_value = mock_cur
+        mock_cur.fetchone.return_value = (uuid.uuid4(),)
+        mock_get_db_connection.return_value.__enter__.return_value = mock_conn
         
         course = Course(
-            course_id="test-course-123",
-            user_id="user-456",
+            course_id=str(uuid.uuid4()),
+            user_id=str(uuid.uuid4()),
             title="Test Course",
             original_query="Test query",
             estimated_hours=2.0,
+            preferences=CoursePreferences(),
         )
         
         command = CreateCourseCommand(course=course)
         result = execute_command(command)
         
-        # Should return success but not actually store yet
+        # Verify success
         assert result['status'] == 'success'
-        assert result['course_id'] == "test-course-123"
+        assert 'course_id' in result
+        assert 'course' in result
+        
+        # Verify database call
+        mock_cur.execute.assert_called_once()
+        # Note: commit happens in context manager __exit__, so we verify execute was called
+    
+    @patch('shared.command_executor.get_db_connection')
+    def test_execute_create_course_command_database_error(self, mock_get_db_connection):
+        """Test course creation with database error."""
+        from shared.core.course_models import Course, CoursePreferences
+        import uuid
+        
+        # Setup mock to raise error
+        mock_get_db_connection.side_effect = Exception("Database connection failed")
+        
+        course = Course(
+            course_id=str(uuid.uuid4()),
+            user_id=str(uuid.uuid4()),
+            title="Test Course",
+            original_query="Test query",
+            estimated_hours=2.0,
+            preferences=CoursePreferences(),
+        )
+        
+        command = CreateCourseCommand(course=course)
+        result = execute_command(command)
+        
+        # Verify error handling
+        assert result['status'] == 'error'
+        assert 'error' in result
+        assert "Database connection failed" in result['error']
+    
+    @patch('shared.command_executor.get_db_connection')
+    def test_execute_create_course_command_with_preferences(self, mock_get_db_connection):
+        """Test course creation with custom preferences."""
+        from shared.core.course_models import Course, CoursePreferences
+        import uuid
+        
+        # Setup mock database connection
+        mock_conn = MagicMock()
+        mock_cur = MagicMock()
+        mock_conn.cursor.return_value.__enter__.return_value = mock_cur
+        mock_cur.fetchone.return_value = (uuid.uuid4(),)
+        mock_get_db_connection.return_value.__enter__.return_value = mock_conn
+        
+        preferences = CoursePreferences(
+            depth="technical",
+            presentation_style="podcast",
+            pace="thorough",
+            additional_notes="Custom notes"
+        )
+        
+        course = Course(
+            course_id=str(uuid.uuid4()),
+            user_id=str(uuid.uuid4()),
+            title="Test Course",
+            original_query="Test query",
+            estimated_hours=2.0,
+            preferences=preferences,
+        )
+        
+        command = CreateCourseCommand(course=course)
+        result = execute_command(command)
+        
+        # Verify success
+        assert result['status'] == 'success'
+        
+        # Verify preferences were included in SQL call
+        call_args = mock_cur.execute.call_args[0]
+        sql = call_args[0]
+        assert 'preferences' in sql.lower()
 
 
 class TestCreateSectionsCommand:
     """Test CreateSectionsCommand execution."""
     
-    def test_execute_create_sections_command_not_implemented(self):
-        """Test that section creation returns success (not yet implemented)."""
+    @patch('shared.command_executor.get_db_connection')
+    @patch('shared.command_executor.execute_values')
+    def test_execute_create_sections_command_success(self, mock_execute_values, mock_get_db_connection):
+        """Test successful section creation."""
         from shared.core.course_models import CourseSection
+        import uuid
         
+        # Setup mock database connection
+        mock_conn = MagicMock()
+        mock_cur = MagicMock()
+        mock_conn.cursor.return_value.__enter__.return_value = mock_cur
+        mock_get_db_connection.return_value.__enter__.return_value = mock_conn
+        
+        course_id = str(uuid.uuid4())
         sections = [
             CourseSection(
-                section_id="section-1",
-                course_id="course-123",
+                section_id=str(uuid.uuid4()),
+                course_id=course_id,
                 title="Section 1",
                 order_index=0,
                 estimated_minutes=30,
+                learning_objectives=["Objective 1", "Objective 2"],
+                chunk_ids=[str(uuid.uuid4())],
             ),
             CourseSection(
-                section_id="section-2",
-                course_id="course-123",
+                section_id=str(uuid.uuid4()),
+                course_id=course_id,
                 title="Section 2",
                 order_index=1,
                 estimated_minutes=30,
@@ -249,6 +343,100 @@ class TestCreateSectionsCommand:
         command = CreateSectionsCommand(sections=sections)
         result = execute_command(command)
         
-        # Should return success but not actually store yet
+        # Verify success
         assert result['status'] == 'success'
         assert result['sections_count'] == 2
+        assert len(result['sections']) == 2
+        
+        # Verify batch insert was called
+        mock_execute_values.assert_called_once()
+        # Note: commit happens in context manager __exit__, so we verify execute_values was called
+    
+    @patch('shared.command_executor.get_db_connection')
+    def test_execute_create_sections_command_empty_list(self, mock_get_db_connection):
+        """Test section creation with empty list."""
+        command = CreateSectionsCommand(sections=[])
+        result = execute_command(command)
+        
+        # Should return success with 0 sections
+        assert result['status'] == 'success'
+        assert result['sections_count'] == 0
+        assert result['sections'] == []
+        
+        # Should not call database
+        mock_get_db_connection.assert_not_called()
+    
+    @patch('shared.command_executor.get_db_connection')
+    @patch('shared.command_executor.execute_values')
+    def test_execute_create_sections_command_with_hierarchy(self, mock_execute_values, mock_get_db_connection):
+        """Test section creation with parent-child hierarchy."""
+        from shared.core.course_models import CourseSection
+        import uuid
+        
+        # Setup mock database connection
+        mock_conn = MagicMock()
+        mock_cur = MagicMock()
+        mock_conn.cursor.return_value.__enter__.return_value = mock_cur
+        mock_get_db_connection.return_value.__enter__.return_value = mock_conn
+        
+        course_id = str(uuid.uuid4())
+        parent_id = str(uuid.uuid4())
+        
+        sections = [
+            CourseSection(
+                section_id=parent_id,
+                course_id=course_id,
+                title="Part 1",
+                order_index=0,
+                estimated_minutes=60,
+                parent_section_id=None,  # Top-level part
+            ),
+            CourseSection(
+                section_id=str(uuid.uuid4()),
+                course_id=course_id,
+                title="Section 1.1",
+                order_index=1,
+                estimated_minutes=30,
+                parent_section_id=parent_id,  # Child of Part 1
+            ),
+        ]
+        
+        command = CreateSectionsCommand(sections=sections)
+        result = execute_command(command)
+        
+        # Verify success
+        assert result['status'] == 'success'
+        assert result['sections_count'] == 2
+        
+        # Verify batch insert was called with both sections
+        mock_execute_values.assert_called_once()
+        call_args = mock_execute_values.call_args
+        values = call_args[0][2]  # Third argument is values
+        assert len(values) == 2
+    
+    @patch('shared.command_executor.get_db_connection')
+    def test_execute_create_sections_command_database_error(self, mock_get_db_connection):
+        """Test section creation with database error."""
+        from shared.core.course_models import CourseSection
+        import uuid
+        
+        # Setup mock to raise error
+        mock_get_db_connection.side_effect = Exception("Database error")
+        
+        sections = [
+            CourseSection(
+                section_id=str(uuid.uuid4()),
+                course_id=str(uuid.uuid4()),
+                title="Section 1",
+                order_index=0,
+                estimated_minutes=30,
+            ),
+        ]
+        
+        command = CreateSectionsCommand(sections=sections)
+        result = execute_command(command)
+        
+        # Verify error handling
+        assert result['status'] == 'error'
+        assert 'error' in result
+        assert "Database error" in result['error']

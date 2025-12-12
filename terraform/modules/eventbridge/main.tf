@@ -15,9 +15,10 @@ resource "aws_cloudwatch_event_bus" "course_events" {
 }
 
 # Event Rule: CourseRequested → Embedding Generator Lambda
+# Using default bus instead of custom bus (custom bus has issues with event matching)
 resource "aws_cloudwatch_event_rule" "course_requested" {
   name           = "${var.project_name}-${var.environment}-course-requested"
-  event_bus_name = aws_cloudwatch_event_bus.course_events.name
+  # event_bus_name = aws_cloudwatch_event_bus.course_events.name  # Using default bus
   description    = "Route CourseRequested events to embedding generator"
 
   event_pattern = jsonencode({
@@ -36,7 +37,7 @@ resource "aws_cloudwatch_event_rule" "course_requested" {
 # Event Rule: EmbeddingGenerated → Book Search Lambda
 resource "aws_cloudwatch_event_rule" "embedding_generated" {
   name           = "${var.project_name}-${var.environment}-embedding-generated"
-  event_bus_name = aws_cloudwatch_event_bus.course_events.name
+  # event_bus_name = aws_cloudwatch_event_bus.course_events.name  # Using default bus
   description    = "Route EmbeddingGenerated events to book search"
 
   event_pattern = jsonencode({
@@ -55,7 +56,7 @@ resource "aws_cloudwatch_event_rule" "embedding_generated" {
 # Event Rule: BookSummariesFound → Parts Generator Lambda
 resource "aws_cloudwatch_event_rule" "book_summaries_found" {
   name           = "${var.project_name}-${var.environment}-book-summaries-found"
-  event_bus_name = aws_cloudwatch_event_bus.course_events.name
+  # event_bus_name = aws_cloudwatch_event_bus.course_events.name  # Using default bus
   description    = "Route BookSummariesFound events to parts generator"
 
   event_pattern = jsonencode({
@@ -74,7 +75,7 @@ resource "aws_cloudwatch_event_rule" "book_summaries_found" {
 # Event Rule: PartsGenerated → Sections Generator Lambda
 resource "aws_cloudwatch_event_rule" "parts_generated" {
   name           = "${var.project_name}-${var.environment}-parts-generated"
-  event_bus_name = aws_cloudwatch_event_bus.course_events.name
+  # event_bus_name = aws_cloudwatch_event_bus.course_events.name  # Using default bus
   description    = "Route PartsGenerated events to sections generator"
 
   event_pattern = jsonencode({
@@ -93,7 +94,7 @@ resource "aws_cloudwatch_event_rule" "parts_generated" {
 # Event Rule: PartSectionsGenerated → Next Part or Review
 resource "aws_cloudwatch_event_rule" "part_sections_generated" {
   name           = "${var.project_name}-${var.environment}-part-sections-generated"
-  event_bus_name = aws_cloudwatch_event_bus.course_events.name
+  # event_bus_name = aws_cloudwatch_event_bus.course_events.name  # Using default bus
   description    = "Route PartSectionsGenerated events (triggers next part or review)"
 
   event_pattern = jsonencode({
@@ -112,7 +113,7 @@ resource "aws_cloudwatch_event_rule" "part_sections_generated" {
 # Event Rule: AllPartsComplete → Outline Reviewer Lambda
 resource "aws_cloudwatch_event_rule" "all_parts_complete" {
   name           = "${var.project_name}-${var.environment}-all-parts-complete"
-  event_bus_name = aws_cloudwatch_event_bus.course_events.name
+  # event_bus_name = aws_cloudwatch_event_bus.course_events.name  # Using default bus
   description    = "Route AllPartsComplete events to outline reviewer"
 
   event_pattern = jsonencode({
@@ -131,7 +132,7 @@ resource "aws_cloudwatch_event_rule" "all_parts_complete" {
 # Event Rule: OutlineReviewed → Course Storage Lambda
 resource "aws_cloudwatch_event_rule" "outline_reviewed" {
   name           = "${var.project_name}-${var.environment}-outline-reviewed"
-  event_bus_name = aws_cloudwatch_event_bus.course_events.name
+  # event_bus_name = aws_cloudwatch_event_bus.course_events.name  # Using default bus
   description    = "Route OutlineReviewed events to course storage"
 
   event_pattern = jsonencode({
@@ -143,6 +144,44 @@ resource "aws_cloudwatch_event_rule" "outline_reviewed" {
     var.tags,
     {
       Name = "${var.project_name}-${var.environment}-outline-reviewed-rule"
+    }
+  )
+}
+
+# Event Rule: DocumentProcessed → Source Summary Generator Lambda
+resource "aws_cloudwatch_event_rule" "document_processed" {
+  name           = "${var.project_name}-${var.environment}-document-processed"
+  # event_bus_name = aws_cloudwatch_event_bus.course_events.name  # Using default bus
+  description    = "Route DocumentProcessed events to source summary generator"
+
+  event_pattern = jsonencode({
+    source      = ["docprof.ingestion"]
+    detail-type = ["DocumentProcessed"]
+  })
+
+  tags = merge(
+    var.tags,
+    {
+      Name = "${var.project_name}-${var.environment}-document-processed-rule"
+    }
+  )
+}
+
+# Event Rule: SourceSummaryStored → Embedding Generator Lambda
+resource "aws_cloudwatch_event_rule" "source_summary_stored" {
+  name           = "${var.project_name}-${var.environment}-source-summary-stored"
+  # event_bus_name = aws_cloudwatch_event_bus.course_events.name  # Using default bus
+  description    = "Route SourceSummaryStored events to embedding generator"
+
+  event_pattern = jsonencode({
+    source      = ["docprof.ingestion"]
+    detail-type = ["SourceSummaryStored"]
+  })
+
+  tags = merge(
+    var.tags,
+    {
+      Name = "${var.project_name}-${var.environment}-source-summary-stored-rule"
     }
   )
 }

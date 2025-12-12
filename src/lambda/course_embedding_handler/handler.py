@@ -80,7 +80,13 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         save_course_state(course_id, result.new_state)
         
         # Publish BookSummariesFoundEvent
-        publish_book_summaries_found_event(course_id, books)
+        logger.info(f"Publishing BookSummariesFoundEvent for course {course_id} with {len(books)} books")
+        try:
+            publish_book_summaries_found_event(course_id, books)
+            logger.info(f"Successfully published BookSummariesFoundEvent for course {course_id}")
+        except Exception as e:
+            logger.error(f"Failed to publish BookSummariesFoundEvent: {e}", exc_info=True)
+            raise
         
         logger.info(f"Processed embedding for course {course_id}, found {len(books)} books")
         

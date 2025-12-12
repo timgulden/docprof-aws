@@ -213,23 +213,25 @@ class EndQASessionCommand(Command):
     qa_session_id: str
 
 
-# Book Summary Generation Commands
+# Source Summary Generation Commands
 class ExtractTOCCommand(Command):
-    """Extract table of contents from PDF."""
-    pdf_path: Path
+    """Extract table of contents from PDF (S3 path)."""
+    s3_bucket: str
+    s3_key: str
 
 
 class ExtractChapterTextCommand(Command):
-    """Extract text for specific chapter."""
-    pdf_path: Path
+    """Extract text for specific chapter from PDF (S3)."""
+    s3_bucket: str
+    s3_key: str
     start_page: int
     end_page: int
     chapter_title: str
 
 
-class StoreBookSummaryCommand(Command):
-    """Store book summary in database."""
-    book_id: str
+class StoreSourceSummaryCommand(Command):
+    """Store source summary in database."""
+    source_id: str  # book_id in database (kept for backward compatibility)
     summary_json: str
 
 

@@ -186,6 +186,11 @@ output "course_request_handler_function_name" {
   value       = module.course_request_handler_lambda.function_name
 }
 
+output "course_status_endpoint" {
+  description = "Course status endpoint URL (use {courseId} placeholder)"
+  value       = "${module.api_gateway.api_url}/course-status/{courseId}"
+}
+
 # TODO: Add more outputs as modules are added:
 # output "cloudfront_url" {
 #   description = "CloudFront distribution URL"

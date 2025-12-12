@@ -10,7 +10,13 @@ import tempfile
 from pathlib import Path
 
 def package_lambda(source_path, shared_path, zip_path):
-    """Package Lambda function code with shared modules"""
+    """Package Lambda function code with shared modules
+    
+    Structure in ZIP:
+    - handler.py (at root)
+    - requirements.txt (at root)
+    - shared/ (directory with all shared modules)
+    """
     source_path = Path(source_path).resolve()
     shared_path = Path(shared_path).resolve()
     zip_path = Path(zip_path).resolve()
@@ -18,15 +24,23 @@ def package_lambda(source_path, shared_path, zip_path):
     # Create temp directory
     with tempfile.TemporaryDirectory() as temp_dir:
         temp_path = Path(temp_dir)
-        function_dir = temp_path / source_path.name
-        shared_dir = temp_path / "shared"
         
-        # Copy function code
-        shutil.copytree(source_path, function_dir)
+        # Copy handler.py and requirements.txt to root of temp directory
+        handler_file = source_path / "handler.py"
+        if handler_file.exists():
+            shutil.copy2(handler_file, temp_path / "handler.py")
+            print(f"Copied handler.py to root")
         
-        # Copy shared code if it exists
+        requirements_file = source_path / "requirements.txt"
+        if requirements_file.exists():
+            shutil.copy2(requirements_file, temp_path / "requirements.txt")
+            print(f"Copied requirements.txt to root")
+        
+        # Copy shared code to shared/ directory
         if shared_path.exists():
+            shared_dir = temp_path / "shared"
             shutil.copytree(shared_path, shared_dir)
+            print(f"Copied shared/ directory")
         
         # Remove excluded files
         for pattern in ["*.pyc", "__pycache__", ".pytest_cache", "tests", "*.md"]:
@@ -41,6 +55,7 @@ def package_lambda(source_path, shared_path, zip_path):
         with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
             for file_path in temp_path.rglob('*'):
                 if file_path.is_file():
+                    # Keep relative path structure (handler.py at root, shared/ as subdirectory)
                     arcname = file_path.relative_to(temp_path)
                     zipf.write(file_path, arcname)
         

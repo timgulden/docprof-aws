@@ -55,6 +55,105 @@ def create_schema(force: bool = False) -> Dict[str, Any]:
             """)
             tables_exist = cur.fetchone()[0]
             
+            # Always ensure source_summaries table exists (it may have been added later)
+            logger.info("Ensuring source_summaries table exists...")
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS source_summaries (
+                    summary_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                    book_id UUID NOT NULL REFERENCES books(book_id) ON DELETE CASCADE,
+                    summary_json JSONB NOT NULL,
+                    embedding vector(1536),
+                    generated_at TIMESTAMP DEFAULT NOW(),
+                    generated_by TEXT,
+                    version INTEGER DEFAULT 1,
+                    metadata JSONB DEFAULT '{}'::jsonb
+                );
+                
+                CREATE INDEX IF NOT EXISTS source_summaries_book_idx ON source_summaries(book_id);
+                CREATE INDEX IF NOT EXISTS source_summaries_generated_at_idx ON source_summaries(generated_at);
+                CREATE UNIQUE INDEX IF NOT EXISTS source_summaries_book_version_idx ON source_summaries(book_id, version);
+            """)
+            
+            # Add embedding column if it doesn't exist
+            cur.execute("""
+                DO $$
+                BEGIN
+                    IF NOT EXISTS (
+                        SELECT 1 FROM information_schema.columns 
+                        WHERE table_name = 'source_summaries' AND column_name = 'embedding'
+                    ) THEN
+                        ALTER TABLE source_summaries ADD COLUMN embedding vector(1536);
+                    END IF;
+                END $$;
+            """)
+            
+            # Create vector index if embedding column exists
+            cur.execute("""
+                DO $$
+                BEGIN
+                    IF EXISTS (
+                        SELECT 1 FROM information_schema.columns 
+                        WHERE table_name = 'source_summaries' AND column_name = 'embedding'
+                    ) AND NOT EXISTS (
+                        SELECT 1 FROM pg_indexes 
+                        WHERE indexname = 'source_summaries_embedding_idx'
+                    ) THEN
+                        CREATE INDEX source_summaries_embedding_idx ON source_summaries 
+                            USING ivfflat (embedding vector_cosine_ops)
+                            WITH (lists = 10);
+                    END IF;
+                END $$;
+            """)
+            conn.commit()
+            logger.info("✓ source_summaries table ensured")
+            
+            # Always ensure courses table exists (for course system)
+            logger.info("Ensuring courses table exists...")
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS courses (
+                    course_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                    user_id UUID NOT NULL,
+                    title TEXT NOT NULL,
+                    original_query TEXT NOT NULL,
+                    estimated_hours FLOAT NOT NULL,
+                    created_at TIMESTAMP DEFAULT NOW(),
+                    last_modified TIMESTAMP DEFAULT NOW(),
+                    preferences JSONB DEFAULT '{"depth": "balanced", "presentation_style": "conversational", "pace": "moderate", "additional_notes": ""}'::jsonb,
+                    status TEXT DEFAULT 'active' CHECK (status IN ('active', 'completed', 'archived'))
+                );
+                
+                CREATE INDEX IF NOT EXISTS courses_user_idx ON courses(user_id);
+                CREATE INDEX IF NOT EXISTS courses_status_idx ON courses(user_id, status);
+            """)
+            logger.info("✓ courses table ensured")
+            
+            # Always ensure course_sections table exists
+            logger.info("Ensuring course_sections table exists...")
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS course_sections (
+                    section_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                    course_id UUID NOT NULL REFERENCES courses(course_id) ON DELETE CASCADE,
+                    parent_section_id UUID REFERENCES course_sections(section_id) ON DELETE CASCADE,
+                    order_index INTEGER NOT NULL,
+                    title TEXT NOT NULL,
+                    learning_objectives TEXT[] DEFAULT '{}',
+                    content_summary TEXT,
+                    estimated_minutes INTEGER NOT NULL,
+                    chunk_ids UUID[] DEFAULT '{}',
+                    status TEXT DEFAULT 'not_started' CHECK (status IN ('not_started', 'in_progress', 'completed')),
+                    completed_at TIMESTAMP,
+                    can_standalone BOOLEAN DEFAULT FALSE,
+                    prerequisites UUID[] DEFAULT '{}',
+                    created_at TIMESTAMP DEFAULT NOW()
+                );
+                
+                CREATE INDEX IF NOT EXISTS sections_course_idx ON course_sections(course_id, order_index);
+                CREATE INDEX IF NOT EXISTS sections_status_idx ON course_sections(course_id, status);
+                CREATE INDEX IF NOT EXISTS sections_parent_idx ON course_sections(parent_section_id);
+            """)
+            conn.commit()
+            logger.info("✓ course_sections table ensured")
+            
             if tables_exist and not force:
                 return {
                     'status': 'skipped',
@@ -64,6 +163,7 @@ def create_schema(force: bool = False) -> Dict[str, Any]:
             
             if force and tables_exist:
                 logger.info("Dropping existing tables...")
+                cur.execute("DROP TABLE IF EXISTS source_summaries CASCADE;")
                 cur.execute("DROP TABLE IF EXISTS chunks CASCADE;")
                 cur.execute("DROP TABLE IF EXISTS figures CASCADE;")
                 cur.execute("DROP TABLE IF EXISTS chapter_documents CASCADE;")
@@ -175,6 +275,85 @@ def create_schema(force: bool = False) -> Dict[str, Any]:
                 CREATE INDEX chunks_keywords_idx ON chunks USING gin(keywords);
             """)
             logger.info("✓ chunks table created")
+            
+            # Source summaries table (for course planning)
+            logger.info("Creating source_summaries table...")
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS source_summaries (
+                    summary_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                    book_id UUID NOT NULL REFERENCES books(book_id) ON DELETE CASCADE,
+                    summary_json JSONB NOT NULL,
+                    embedding vector(1536),  -- For vector similarity search
+                    generated_at TIMESTAMP DEFAULT NOW(),
+                    generated_by TEXT,
+                    version INTEGER DEFAULT 1,
+                    metadata JSONB DEFAULT '{}'::jsonb
+                );
+                
+                CREATE INDEX IF NOT EXISTS source_summaries_book_idx ON source_summaries(book_id);
+                CREATE INDEX IF NOT EXISTS source_summaries_generated_at_idx ON source_summaries(generated_at);
+                CREATE UNIQUE INDEX IF NOT EXISTS source_summaries_book_version_idx ON source_summaries(book_id, version);
+                
+                -- Vector index for similarity search
+                DO $$
+                BEGIN
+                    IF EXISTS (
+                        SELECT 1 FROM information_schema.columns 
+                        WHERE table_name = 'source_summaries' AND column_name = 'embedding'
+                    ) THEN
+                        CREATE INDEX IF NOT EXISTS source_summaries_embedding_idx ON source_summaries 
+                            USING ivfflat (embedding vector_cosine_ops)
+                            WITH (lists = 10);
+                    END IF;
+                END $$;
+            """)
+            logger.info("✓ source_summaries table created with embedding support")
+            
+            # Always ensure courses table exists (for course system)
+            logger.info("Ensuring courses table exists...")
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS courses (
+                    course_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                    user_id UUID NOT NULL,
+                    title TEXT NOT NULL,
+                    original_query TEXT NOT NULL,
+                    estimated_hours FLOAT NOT NULL,
+                    created_at TIMESTAMP DEFAULT NOW(),
+                    last_modified TIMESTAMP DEFAULT NOW(),
+                    preferences JSONB DEFAULT '{"depth": "balanced", "presentation_style": "conversational", "pace": "moderate", "additional_notes": ""}'::jsonb,
+                    status TEXT DEFAULT 'active' CHECK (status IN ('active', 'completed', 'archived'))
+                );
+                
+                CREATE INDEX IF NOT EXISTS courses_user_idx ON courses(user_id);
+                CREATE INDEX IF NOT EXISTS courses_status_idx ON courses(user_id, status);
+            """)
+            logger.info("✓ courses table ensured")
+            
+            # Always ensure course_sections table exists
+            logger.info("Ensuring course_sections table exists...")
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS course_sections (
+                    section_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                    course_id UUID NOT NULL REFERENCES courses(course_id) ON DELETE CASCADE,
+                    parent_section_id UUID REFERENCES course_sections(section_id) ON DELETE CASCADE,
+                    order_index INTEGER NOT NULL,
+                    title TEXT NOT NULL,
+                    learning_objectives TEXT[] DEFAULT '{}',
+                    content_summary TEXT,
+                    estimated_minutes INTEGER NOT NULL,
+                    chunk_ids UUID[] DEFAULT '{}',
+                    status TEXT DEFAULT 'not_started' CHECK (status IN ('not_started', 'in_progress', 'completed')),
+                    completed_at TIMESTAMP,
+                    can_standalone BOOLEAN DEFAULT FALSE,
+                    prerequisites UUID[] DEFAULT '{}',
+                    created_at TIMESTAMP DEFAULT NOW()
+                );
+                
+                CREATE INDEX IF NOT EXISTS sections_course_idx ON course_sections(course_id, order_index);
+                CREATE INDEX IF NOT EXISTS sections_status_idx ON course_sections(course_id, status);
+                CREATE INDEX IF NOT EXISTS sections_parent_idx ON course_sections(parent_section_id);
+            """)
+            logger.info("✓ course_sections table ensured")
             
             conn.commit()
             

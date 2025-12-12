@@ -407,16 +407,18 @@ Return ONLY the refined lecture script as plain text, ready to be spoken.
 Do not include stage directions, formatting, or objective labels.
 Do not use explicit figure references like "Figure 1" - just describe what the figure shows naturally as part of the narrative.""",
 
-    # Book Summary Generation - Chapter Summary
-    "book_summaries.chapter": """Analyze Chapter {chapter_number}: {chapter_title}
+    # Source Summary Generation - Chapter Summary
+    "source_summaries.chapter": """You are generating a structured JSON summary for Chapter {chapter_number}: {chapter_title}
 
-Table of Contents Structure:
+CONTEXT - Table of Contents Structure:
 {sections_list}
 
-Chapter Content:
+This TOC structure shows the expected sections and their page ranges. Use this to guide your section extraction and ensure page ranges match.
+
+CONTENT - Chapter Text:
 {text_preview}
 
-Create a structured JSON summary:
+TASK: Create a structured JSON summary following this EXACT format:
 {{
   "chapter_number": {chapter_number},
   "chapter_title": "{chapter_title}",
@@ -431,22 +433,80 @@ Create a structured JSON summary:
   "summary": "2-3 sentence overview of the chapter's main content and purpose"
 }}
 
-Requirements:
-- Extract topics and key concepts for each section listed in the TOC
-- Topics should be the main subjects covered
-- Key concepts should be important ideas, formulas, models, or frameworks
-- Page ranges should match the TOC structure
-- Summary should capture the chapter's overall purpose
+CRITICAL JSON FORMATTING REQUIREMENTS:
+1. Return ONLY valid JSON - no markdown code blocks (```json), no explanations, no text before or after
+2. Every property must be followed by a comma EXCEPT the last property in each object
+3. Every array element must be followed by a comma EXCEPT the last element
+4. All strings must be properly quoted with double quotes
+5. All closing braces and brackets must be properly matched
+6. No trailing commas before closing braces }} or brackets ]
+7. Ensure proper comma placement: "key": value, "next_key": value (comma after value, before next key)
+8. Escape quotes in strings: "He said \"hello\"" not "He said "hello""
 
-Return ONLY valid JSON, no markdown formatting.""",
+CONTENT REQUIREMENTS:
+- Extract topics and key concepts for each section listed in the TOC above
+- Topics should be the main subjects covered in that section
+- Key concepts should be important ideas, formulas, models, or frameworks introduced
+- Page ranges should match the TOC structure exactly
+- Summary should capture the chapter's overall purpose and main themes
 
-    # Book Summary Generation - Extract Book Overview
-    "book_summaries.extract_overview": """Extract a 3-5 sentence overview of this book from Chapter 1.
+VALIDATION CHECKLIST (verify before returning):
+✓ All commas are present between properties (except last property in each object)
+✓ All commas are present between array elements (except last element)
+✓ No trailing commas before }} or ]
+✓ All quotes are properly escaped if they appear in strings
+✓ All braces {{ }} and brackets [ ] are matched
+✓ All strings use double quotes, not single quotes
+✓ Numbers and booleans are not quoted
+
+Return ONLY the JSON object, nothing else. No markdown, no explanations, no commentary.""",
+
+    # Source Summary Generation - JSON Repair
+    "source_summaries.repair_json": """You are a JSON repair specialist. Your task is to fix syntax errors in malformed JSON.
+
+Original Chapter Context:
+- Chapter Number: {chapter_number}
+- Chapter Title: {chapter_title}
+
+Table of Contents Structure (for reference):
+{sections_list}
+
+Malformed JSON (has syntax errors):
+{malformed_json}
+
+JSON Parse Error:
+{parse_error}
+
+Common JSON errors to look for:
+1. Missing commas between properties: "key": value "next_key" should be "key": value, "next_key"
+2. Missing commas between array elements: ["item1" "item2"] should be ["item1", "item2"]
+3. Trailing commas before closing braces: {{"key": value,}} should be {{"key": value}}
+4. Trailing commas before closing brackets: ["item",] should be ["item"]
+5. Unclosed strings or mismatched quotes
+6. Missing closing braces or brackets
+
+Your task:
+1. Identify all JSON syntax errors in the malformed JSON above
+2. Repair them to create valid JSON
+3. Preserve all the content - only fix syntax, don't change the data
+4. Return ONLY the repaired JSON object, nothing else
+5. Ensure the structure matches the expected format:
+   {{
+     "chapter_number": {chapter_number},
+     "chapter_title": "{chapter_title}",
+     "sections": [...],
+     "summary": "..."
+   }}
+
+Return ONLY the repaired, valid JSON object.""",
+
+    # Source Summary Generation - Extract Source Overview
+    "source_summaries.extract_overview": """Extract a 3-5 sentence overview of this source from Chapter 1.
 
 Chapter 1 Content:
 {chapter_one_text}
 
-Extract the book's main purpose, scope, and themes. This should be a high-level
+Extract the source's main purpose, scope, and themes. This should be a high-level
 overview of what the entire book covers.
 
 Return ONLY the summary text (3-5 sentences), no JSON, no markdown formatting.""",

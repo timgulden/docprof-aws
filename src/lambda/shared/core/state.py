@@ -37,7 +37,7 @@ class LogicResult(BaseModel):
 
     model_config = ConfigDict(frozen=False)
 
-    new_state: BaseModel
+    new_state: Any  # Can be BaseModel, Dict, or any state representation
     commands: List["Command"] = Field(default_factory=list)
     ui_message: Optional[str] = None
 

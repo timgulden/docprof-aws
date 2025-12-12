@@ -133,3 +133,22 @@ resource "aws_vpc_endpoint" "secretsmanager" {
     }
   )
 }
+
+# EventBridge Interface Endpoint - ALWAYS ON (Required for course generation workflow)
+resource "aws_vpc_endpoint" "events" {
+  vpc_id              = aws_vpc.main.id
+  service_name        = "com.amazonaws.${data.aws_region.current.name}.events"
+  vpc_endpoint_type   = "Interface"
+  subnet_ids          = aws_subnet.private[*].id
+  security_group_ids  = [aws_security_group.vpc_endpoints.id]
+  private_dns_enabled = true
+
+  tags = merge(
+    var.tags,
+    {
+      Name    = "${var.project_name}-${var.environment}-events-endpoint"
+      Service = "events"
+      Required = "true"
+    }
+  )
+}

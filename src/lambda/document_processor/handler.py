@@ -24,6 +24,7 @@ logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
 s3_client = boto3.client('s3')
+eventbridge_client = boto3.client('events')
 
 # Environment variables (set by Terraform)
 SOURCE_BUCKET = None
@@ -302,11 +303,41 @@ def process_document_with_maexpert_logic(
         
         logger.info(f"Ingestion complete: {result}")
         
+        # Trigger source summary generation as final step
+        # This is done asynchronously via EventBridge to avoid blocking
+        try:
+                        event_bus_name = os.getenv('EVENT_BUS_NAME', '').strip() or None  # Use default bus if empty
+            
+            # Publish document processed event
+            eventbridge_client.put_events(
+                Entries=[
+                    {
+                        'Source': 'docprof.ingestion',
+                        'DetailType': 'DocumentProcessed',
+                        'Detail': json.dumps({
+                            'source_id': result.get('book_id', book_id),
+                            'source_title': book_metadata.title,
+                            'author': book_metadata.author or 'Unknown',
+                            's3_bucket': bucket_name,
+                            's3_key': object_key,
+                            'chunks_created': result.get('total_chunks', 0),
+                            'figures_created': result.get('total_figures', 0),
+                        }),
+                                    **({'EventBusName': event_bus_name} if event_bus_name else {}),
+                    }
+                ]
+            )
+            logger.info("Published DocumentProcessed event for source summary generation")
+        except Exception as e:
+            logger.warning(f"Failed to publish DocumentProcessed event: {e}")
+            # Don't fail ingestion if summary generation trigger fails
+        
         return {
             'book_id': result.get('book_id', book_id),
             'chunks_created': result.get('total_chunks', 0),
             'figures_created': result.get('total_figures', 0),
-            'status': 'success'
+            'status': 'success',
+            'summary_generation_triggered': True,
         }
         
     finally:

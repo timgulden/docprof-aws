@@ -4,6 +4,13 @@ Standard API response utilities for Lambda functions
 
 from typing import Dict, Any, Optional
 import json
+from datetime import datetime, date
+
+def _json_serializer(obj):
+    """JSON serializer for objects not serializable by default json code"""
+    if isinstance(obj, (datetime, date)):
+        return obj.isoformat()
+    raise TypeError(f"Type {type(obj)} not serializable")
 
 def success_response(
     body: Dict[str, Any],
@@ -34,7 +41,7 @@ def success_response(
     return {
         'statusCode': status_code,
         'headers': default_headers,
-        'body': json.dumps(body)
+        'body': json.dumps(body, default=_json_serializer)
     }
 
 
