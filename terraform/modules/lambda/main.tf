@@ -45,31 +45,37 @@ resource "aws_lambda_function" "this" {
   )
 }
 
-# Create ZIP archive that includes function code and shared modules
+# Create ZIP archive that includes function code and optionally shared modules
 locals {
   # Get the lambda root directory (parent of function directory)
-  lambda_root = dirname(var.source_path)
+  lambda_root  = dirname(var.source_path)
   function_dir = basename(var.source_path)
-  shared_path = "${local.lambda_root}/shared"
-  
+  shared_path  = "${local.lambda_root}/shared"
+
   staging_dir = "${path.module}/.terraform/${var.function_name}-staging"
-  zip_path = "${path.module}/.terraform/${var.function_name}.zip"
-  
+  zip_path    = "${path.module}/.terraform/${var.function_name}.zip"
+
   # Get all files to include
   function_files = fileset(var.source_path, "**")
-  shared_files = fileexists("${local.shared_path}/__init__.py") ? fileset(local.shared_path, "**") : []
-  
+
+  # Only bundle shared code if bundle_shared_code is true
+  # When using shared code layer, set bundle_shared_code = false
+  # Get shared files only if we need to bundle them
+  shared_files = (!var.bundle_shared_code || !fileexists("${local.shared_path}/__init__.py")) ? [] : fileset(local.shared_path, "**")
+
   # Build maps of relative path -> file content
   # Function files go to ZIP root (not in subdirectory) so handler can be "handler.lambda_handler"
   function_content = {
     for f in local.function_files :
     f => file("${var.source_path}/${f}")
   }
-  shared_content = fileexists("${local.shared_path}/__init__.py") ? {
+
+  # Only include shared content if we're bundling it
+  shared_content = (!var.bundle_shared_code || length(local.shared_files) == 0) ? {} : {
     for f in local.shared_files :
     "shared/${f}" => file("${local.shared_path}/${f}")
-  } : {}
-  
+  }
+
   all_content = merge(local.function_content, local.shared_content)
 }
 
@@ -77,10 +83,10 @@ locals {
 # This creates the directory structure that archive_file can then zip
 resource "local_file" "lambda_staging" {
   for_each = local.all_content
-  
+
   filename = "${local.staging_dir}/${each.key}"
   content  = each.value
-  
+
   # Ensure directory exists
   directory_permission = "0755"
   file_permission      = "0644"
@@ -92,14 +98,14 @@ data "archive_file" "lambda_zip" {
   type        = "zip"
   output_path = local.zip_path
   source_dir  = local.staging_dir
-  
+
   depends_on = [local_file.lambda_staging]
 }
 
 # CloudWatch Log Group
 resource "aws_cloudwatch_log_group" "lambda" {
   name              = "/aws/lambda/${aws_lambda_function.this.function_name}"
-  retention_in_days = 7  # Dev: 7 days, Prod: 30 days
+  retention_in_days = 7 # Dev: 7 days, Prod: 30 days
 
   tags = merge(
     var.tags,
@@ -115,7 +121,7 @@ resource "aws_cloudwatch_log_group" "lambda" {
 # IAM Role for Lambda (only create if role_arn not provided)
 resource "aws_iam_role" "lambda_execution" {
   count = var.role_arn == null ? 1 : 0
-  
+
   name = "${var.project_name}-${var.environment}-${var.function_name}-execution"
 
   assume_role_policy = jsonencode({

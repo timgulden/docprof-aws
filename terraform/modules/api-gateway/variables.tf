@@ -56,3 +56,9 @@ variable "endpoints" {
   default = {}
 }
 
+variable "cognito_user_pool_arn" {
+  description = "Cognito User Pool ARN for API Gateway authorizer (optional)"
+  type        = string
+  default     = null
+}
+

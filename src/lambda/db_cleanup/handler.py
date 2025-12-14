@@ -13,8 +13,9 @@ logger.setLevel(logging.INFO)
 
 
 def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
-    """Clean up broken book records."""
+    """Clean up broken book records or delete all data."""
     
+    delete_all = event.get('delete_all', False)
     book_id = event.get('book_id')
     delete_all_broken = event.get('delete_all_broken', False)
     dry_run = event.get('dry_run', True)
@@ -31,6 +32,51 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     try:
         with get_db_connection() as conn:
             with conn.cursor() as cur:
+                # Handle delete_all option
+                if delete_all:
+                    if not dry_run:
+                        # Count records before deletion
+                        cur.execute("SELECT COUNT(*) FROM books")
+                        book_count = cur.fetchone()[0]
+                        cur.execute("SELECT COUNT(*) FROM chunks")
+                        chunk_count = cur.fetchone()[0]
+                        cur.execute("SELECT COUNT(*) FROM chapter_documents")
+                        chapter_count = cur.fetchone()[0]
+                        
+                        # Delete everything
+                        cur.execute("DELETE FROM chunks")
+                        cur.execute("DELETE FROM chapter_documents")
+                        cur.execute("UPDATE books SET metadata = metadata - 'figures' - 'cover' WHERE metadata IS NOT NULL")
+                        cur.execute("DELETE FROM books")
+                        
+                        conn.commit()
+                        
+                        results['books_deleted'] = [f"deleted_all_{book_count}_books"]
+                        results['chunks_deleted'] = chunk_count
+                        results['chapters_deleted'] = chapter_count
+                        
+                        return {
+                            'statusCode': 200,
+                            'body': json.dumps({
+                                **results,
+                                'message': f'Deleted all data: {book_count} books, {chunk_count} chunks, {chapter_count} chapters'
+                            }, indent=2, default=str)
+                        }
+                    else:
+                        # Dry run - just count
+                        cur.execute("SELECT COUNT(*) FROM books")
+                        book_count = cur.fetchone()[0]
+                        cur.execute("SELECT COUNT(*) FROM chunks")
+                        chunk_count = cur.fetchone()[0]
+                        
+                        return {
+                            'statusCode': 200,
+                            'body': json.dumps({
+                                **results,
+                                'message': f'DRY RUN: Would delete all data: {book_count} books, {chunk_count} chunks'
+                            }, indent=2, default=str)
+                        }
+                
                 # Find broken books (title is NULL, empty, or "Unknown")
                 if book_id:
                     cur.execute("""

@@ -191,6 +191,22 @@ output "course_status_endpoint" {
   value       = "${module.api_gateway.api_url}/course-status/{courseId}"
 }
 
+# Cognito Outputs
+output "cognito_user_pool_id" {
+  description = "Cognito User Pool ID"
+  value       = module.cognito.user_pool_id
+}
+
+output "cognito_user_pool_client_id" {
+  description = "Cognito User Pool Client ID (for frontend)"
+  value       = module.cognito.user_pool_client_id
+}
+
+output "cognito_domain" {
+  description = "Cognito domain URL"
+  value       = module.cognito.cognito_domain
+}
+
 # TODO: Add more outputs as modules are added:
 # output "cloudfront_url" {
 #   description = "CloudFront distribution URL"

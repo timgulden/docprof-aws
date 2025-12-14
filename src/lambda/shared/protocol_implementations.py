@@ -86,8 +86,9 @@ class AWSDatabaseClient:
         return book_id
     
     def update_book_cover(self, book_id: str, cover_bytes: bytes, cover_format: str) -> None:
-        """Update book cover image."""
-        # Store cover in metadata for now (could add cover column later)
+        """Update book cover image - stores in database metadata (consistent with figures storage)."""
+        # Store cover in database metadata as hex-encoded bytes (same pattern as original MAExpert)
+        # This is consistent with how figures are stored (image_data BYTEA column)
         with get_db_connection() as conn:
             with conn.cursor() as cur:
                 cur.execute(
@@ -105,7 +106,8 @@ class AWSDatabaseClient:
                     """,
                     (cover_bytes.hex(), cover_format, book_id)
                 )
-                conn.commit()
+                conn.commit()  # Explicitly commit the transaction
+        logger.info(f"Stored cover in database metadata for book_id: {book_id}")
     
     def update_book_total_pages(self, book_id: str, total_pages: int) -> None:
         """Update book total pages."""

@@ -6,6 +6,7 @@ Uses AWS Bedrock Claude for LLM and Titan for embeddings
 import json
 import boto3
 import logging
+import time
 from typing import List, Dict, Any, Optional, Iterator
 from botocore.exceptions import ClientError
 
@@ -109,26 +110,62 @@ def invoke_claude(
     # Sonnet 4.5 provides excellent quality without the cost/speed tradeoffs of Opus
     model_id = f"arn:aws:bedrock:{region}:{account_id}:inference-profile/us.anthropic.claude-sonnet-4-5-20250929-v1:0"
     
-    if stream:
-        response = bedrock_runtime.invoke_model_with_response_stream(
-            modelId=model_id,
-            body=json.dumps(request_body)
-        )
-        return _parse_streaming_response(response)
-    else:
-        response = bedrock_runtime.invoke_model(
-            modelId=model_id,
-            body=json.dumps(request_body)
-        )
-        response_body = json.loads(response['body'].read())
+    # Retry logic for throttling (exponential backoff)
+    max_retries = 3
+    base_delay = 1.0  # Start with 1 second
+    
+    for attempt in range(max_retries + 1):
+        try:
+            if stream:
+                response = bedrock_runtime.invoke_model_with_response_stream(
+                    modelId=model_id,
+                    body=json.dumps(request_body)
+                )
+                return _parse_streaming_response(response)
+            else:
+                response = bedrock_runtime.invoke_model(
+                    modelId=model_id,
+                    body=json.dumps(request_body)
+                )
+                # Read the response body once (it's a stream that can only be read once)
+                body_bytes = response['body'].read()
+                
+                # Ensure we have valid JSON
+                try:
+                    response_body = json.loads(body_bytes.decode('utf-8'))
+                except (json.JSONDecodeError, UnicodeDecodeError) as e:
+                    # Log the raw response for debugging
+                    logger.error(f"Failed to decode Bedrock response: {e}")
+                    logger.error(f"Response body type: {type(body_bytes)}, length: {len(body_bytes) if body_bytes else 0}")
+                    logger.error(f"Response body preview (first 500 chars): {body_bytes[:500] if body_bytes else 'None'}")
+                    raise ValueError(f"Invalid response from Bedrock: {e}")
+                
+                return {
+                    'content': response_body['content'][0]['text'],
+                    'usage': {
+                        'input_tokens': response_body.get('usage', {}).get('input_tokens', 0),
+                        'output_tokens': response_body.get('usage', {}).get('output_tokens', 0)
+                    }
+                }
         
-        return {
-            'content': response_body['content'][0]['text'],
-            'usage': {
-                'input_tokens': response_body.get('usage', {}).get('input_tokens', 0),
-                'output_tokens': response_body.get('usage', {}).get('output_tokens', 0)
-            }
-        }
+        except ClientError as e:
+            error_code = e.response.get('Error', {}).get('Code', '')
+            
+            # Handle throttling with exponential backoff
+            if error_code == 'ThrottlingException' and attempt < max_retries:
+                delay = base_delay * (2 ** attempt)  # Exponential backoff: 1s, 2s, 4s
+                logger.warning(f"Bedrock throttling (attempt {attempt + 1}/{max_retries + 1}), retrying in {delay:.1f}s...")
+                time.sleep(delay)
+                continue
+            
+            # For other errors or final attempt, raise the exception
+            logger.error(f"Bedrock API error: {error_code} - {e}")
+            raise
+        
+        except Exception as e:
+            # Non-ClientError exceptions should be raised immediately
+            logger.error(f"Unexpected error calling Bedrock: {e}")
+            raise
 
 
 def _parse_streaming_response(response) -> Iterator[Dict[str, Any]]:

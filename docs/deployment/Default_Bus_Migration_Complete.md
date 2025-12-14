@@ -92,3 +92,4 @@ If issues occur, can rollback by:
 3. Test end-to-end course generation
 4. Monitor EventBridge metrics
 5. Document any issues or observations
+

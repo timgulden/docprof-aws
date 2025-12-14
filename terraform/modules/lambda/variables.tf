@@ -27,7 +27,7 @@ variable "runtime" {
 variable "timeout" {
   description = "Lambda timeout in seconds"
   type        = number
-  default     = 900  # 15 minutes max
+  default     = 900 # 15 minutes max
 }
 
 variable "memory_size" {
@@ -78,5 +78,11 @@ variable "role_arn" {
   description = "IAM role ARN for Lambda (if provided, uses this instead of creating new role)"
   type        = string
   default     = null
+}
+
+variable "bundle_shared_code" {
+  description = "Whether to bundle shared code into the function ZIP. Set to false when using shared code layer."
+  type        = bool
+  default     = true # Default to true for backward compatibility
 }
 

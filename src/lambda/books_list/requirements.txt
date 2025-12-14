@@ -1,0 +1,5 @@
+# Books List Lambda Requirements
+# Uses shared modules, so minimal dependencies
+
+psycopg2-binary>=2.9.0
+

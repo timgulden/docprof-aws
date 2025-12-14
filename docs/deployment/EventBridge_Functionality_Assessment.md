@@ -280,3 +280,4 @@ terraform plan -target=module.course_request_handler_lambda.aws_lambda_function.
 3. ⏳ **Fix Lambda packaging** - Destroy and recreate
 4. ⏳ **Standardize on default bus** - Update Terraform
 5. ⏳ **Test end-to-end** - Verify course generation works
+

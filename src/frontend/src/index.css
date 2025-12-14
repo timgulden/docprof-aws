@@ -1,0 +1,56 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Custom styling for markdown in chat messages */
+.prose {
+  --tw-prose-body: theme('colors.slate.900');
+  --tw-prose-headings: theme('colors.slate.900');
+  --tw-prose-lead: theme('colors.slate.700');
+  --tw-prose-links: theme('colors.blue.600');
+  --tw-prose-bold: theme('colors.slate.900');
+  --tw-prose-counters: theme('colors.slate.600');
+  --tw-prose-bullets: theme('colors.slate.400');
+  --tw-prose-hr: theme('colors.slate.200');
+  --tw-prose-quotes: theme('colors.slate.900');
+  --tw-prose-quote-borders: theme('colors.slate.200');
+  --tw-prose-captions: theme('colors.slate.600');
+  --tw-prose-code: theme('colors.slate.900');
+  --tw-prose-pre-code: theme('colors.slate.200');
+  --tw-prose-pre-bg: theme('colors.slate.800');
+  --tw-prose-th-borders: theme('colors.slate.300');
+  --tw-prose-td-borders: theme('colors.slate.200');
+}
+
+.prose p {
+  margin-top: 0.5em;
+  margin-bottom: 0.5em;
+}
+
+.prose h1,
+.prose h2,
+.prose h3,
+.prose h4 {
+  margin-top: 0.75em;
+  margin-bottom: 0.5em;
+  font-weight: 600;
+}
+
+.prose ul,
+.prose ol {
+  margin-top: 0.5em;
+  margin-bottom: 0.5em;
+  padding-left: 1.5em;
+}
+
+.prose li {
+  margin-top: 0.25em;
+  margin-bottom: 0.25em;
+}
+
+.prose code {
+  background-color: theme('colors.slate.100');
+  padding: 0.125rem 0.25rem;
+  border-radius: 0.25rem;
+  font-size: 0.875em;
+}

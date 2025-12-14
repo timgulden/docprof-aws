@@ -1,0 +1,13 @@
+<svg width="16" height="16" viewBox="0 0 120 120" xmlns="http://www.w3.org/2000/svg">
+  <!-- Glasses icon - optimized for 16px favicon -->
+  <rect x="15" y="42" width="35" height="36" rx="8" 
+        fill="none" stroke="#1a2332" stroke-width="6"/>
+  <rect x="70" y="42" width="35" height="36" rx="8" 
+        fill="none" stroke="#1a2332" stroke-width="6"/>
+  <line x1="50" y1="60" x2="70" y2="60" stroke="#1a2332" stroke-width="6"/>
+</svg>
+
+
+
+
+

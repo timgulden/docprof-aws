@@ -6,3 +6,6 @@ boto3>=1.34.0
 # Database
 psycopg2-binary>=2.9.9
 
+# PDF processing (PyMuPDF is in lambda layer, but listed here for clarity)
+# PyMuPDF is included in the shared lambda layer
+

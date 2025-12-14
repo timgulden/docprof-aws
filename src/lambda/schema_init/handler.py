@@ -188,12 +188,34 @@ def create_schema(force: bool = False) -> Dict[str, Any]:
                     isbn TEXT,
                     total_pages INTEGER,
                     ingestion_date TIMESTAMP DEFAULT NOW(),
+                    ingestion_status TEXT CHECK (ingestion_status IN ('pending', 'processing', 'complete', 'error')),
+                    ingestion_started_at TIMESTAMP,
+                    ingestion_completed_at TIMESTAMP,
                     created_at TIMESTAMP DEFAULT NOW(),
                     metadata JSONB,
                     pdf_data BYTEA
                 );
             """)
             logger.info("✓ books table created")
+            
+            # Add ingestion_status columns if they don't exist (for existing databases)
+            try:
+                cur.execute("""
+                    DO $$
+                    BEGIN
+                        IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                                      WHERE table_name='books' AND column_name='ingestion_status') THEN
+                            ALTER TABLE books ADD COLUMN ingestion_status TEXT CHECK (ingestion_status IN ('pending', 'processing', 'complete', 'error'));
+                            ALTER TABLE books ADD COLUMN ingestion_started_at TIMESTAMP;
+                            ALTER TABLE books ADD COLUMN ingestion_completed_at TIMESTAMP;
+                        END IF;
+                    END $$;
+                """)
+                conn.commit()
+                logger.info("✓ ingestion_status columns added (if needed)")
+            except Exception as e:
+                logger.warning(f"Could not add ingestion_status columns (may already exist): {e}")
+                conn.rollback()
             
             # Figures table
             logger.info("Creating figures table...")

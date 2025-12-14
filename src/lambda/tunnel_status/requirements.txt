@@ -1,0 +1,2 @@
+# No dependencies needed for stub endpoint
+

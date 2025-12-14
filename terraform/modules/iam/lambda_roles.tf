@@ -102,7 +102,8 @@ resource "aws_iam_role_policy" "lambda_s3" {
           "s3:GetObject",
           "s3:PutObject",
           "s3:DeleteObject",
-          "s3:ListBucket"
+          "s3:ListBucket",
+          "s3:PutObjectAcl"  # Needed for pre-signed POST URLs
         ]
         Resource = [
           "arn:aws:s3:::${var.project_name}-${var.environment}-*",

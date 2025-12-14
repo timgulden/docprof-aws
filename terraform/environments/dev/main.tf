@@ -3,7 +3,7 @@
 
 terraform {
   required_version = ">= 1.5.0"
-  
+
   required_providers {
     aws = {
       source  = "hashicorp/aws"
@@ -26,7 +26,7 @@ terraform {
       version = "~> 2.4"
     }
   }
-  
+
   # TODO: Configure S3 backend for state storage
   # backend "s3" {
   #   bucket = "docprof-terraform-state"
@@ -37,7 +37,7 @@ terraform {
 
 provider "aws" {
   region = var.aws_region
-  
+
   default_tags {
     tags = {
       Project     = "docprof"
@@ -76,7 +76,7 @@ module "vpc" {
   aws_region         = local.aws_region
   vpc_cidr           = "10.0.0.0/16"
   availability_zones = slice(data.aws_availability_zones.available.names, 0, 2)
-  
+
   # Enable AI endpoints on-demand (default: false to save costs)
   enable_ai_endpoints = var.enable_ai_endpoints
 
@@ -103,16 +103,16 @@ module "iam" {
 module "aurora" {
   source = "../../modules/aurora"
 
-  project_name       = local.project_name
-  environment        = local.environment
-  aws_region         = local.aws_region
-  private_subnet_ids = module.vpc.private_subnet_ids
-  security_group_id  = module.vpc.aurora_security_group_id
+  project_name        = local.project_name
+  environment         = local.environment
+  aws_region          = local.aws_region
+  private_subnet_ids  = module.vpc.private_subnet_ids
+  security_group_id   = module.vpc.aurora_security_group_id
   monitoring_role_arn = module.iam.rds_monitoring_role_arn
 
-  min_capacity             = 0      # Enable auto-pause (pauses after 60 min idle)
+  min_capacity             = 0 # Enable auto-pause (pauses after 60 min idle)
   max_capacity             = 2.0
-  seconds_until_auto_pause = 3600   # 60 minutes (1 hour) - smoother UX, still saves costs
+  seconds_until_auto_pause = 3600 # 60 minutes (1 hour) - smoother UX, still saves costs
 
   tags = {
     ManagedBy = "terraform"
@@ -156,6 +156,35 @@ module "dynamodb_course_state" {
   }
 }
 
+# Cognito Module for Authentication
+module "cognito" {
+  source = "../../modules/cognito"
+
+  project_name = local.project_name
+  environment  = local.environment
+
+  # MFA optional for dev (can enable in prod)
+  mfa_enabled = false
+
+  # Callback URLs - will be updated when CloudFront is deployed
+  # For now, include localhost for development
+  callback_urls = [
+    "http://localhost:5173", # Vite dev server
+    "http://localhost:3000", # Alternative dev port
+    # TODO: Add CloudFront URL when deployed
+  ]
+
+  logout_urls = [
+    "http://localhost:5173",
+    "http://localhost:3000",
+    # TODO: Add CloudFront URL when deployed
+  ]
+
+  tags = {
+    ManagedBy = "terraform"
+  }
+}
+
 # EventBridge Module for Course Generation Events
 module "eventbridge" {
   source = "../../modules/eventbridge"
@@ -172,63 +201,89 @@ module "eventbridge" {
 module "lambda_layer" {
   source = "../../modules/lambda-layer"
 
-  project_name     = local.project_name
-  environment      = local.environment
+  project_name      = local.project_name
+  environment       = local.environment
   requirements_path = "${path.module}/../../modules/lambda-layer/requirements.txt"
-  s3_bucket        = module.s3.processed_chunks_bucket_name  # Use processed_chunks bucket for layer storage
+  s3_bucket         = module.s3.processed_chunks_bucket_name # Use processed_chunks bucket for layer storage
 
   tags = {
     ManagedBy = "terraform"
   }
 }
 
+# Lambda Layer for Shared Application Code
+module "shared_code_layer" {
+  source = "../../modules/lambda-shared-code-layer"
+
+  project_name     = local.project_name
+  environment      = local.environment
+  shared_code_path = "${path.module}/../../../src/lambda/shared"
+  s3_bucket        = module.s3.processed_chunks_bucket_name
+
+  tags = {
+    ManagedBy = "terraform"
+  }
+
+  depends_on = [
+    module.s3 # Ensure S3 bucket exists before creating layer
+  ]
+}
+
 # Document Processor Lambda
 module "document_processor_lambda" {
   source = "../../modules/lambda"
 
-  project_name = local.project_name
-  environment  = local.environment
+  project_name  = local.project_name
+  environment   = local.environment
   function_name = "document-processor"
-  
-  handler = "handler.lambda_handler"
-  runtime = "python3.11"
-  timeout = 900  # 15 minutes (max for Lambda)
-  memory_size = 3008  # 3GB for large PDF processing (38MB PDF + processing overhead)
-  
+
+  handler     = "handler.lambda_handler"
+  runtime     = "python3.11"
+  timeout     = 900  # 15 minutes (max for Lambda)
+  memory_size = 3008 # 3GB for large PDF processing (38MB PDF + processing overhead)
+
   source_path = "${path.module}/../../../src/lambda/document_processor"
-  
+
   # Use shared Lambda execution role
   role_arn = module.iam.lambda_execution_role_arn
-  
-  # Attach Python dependencies layer
-  layers = [module.lambda_layer.layer_arn]
-  
+
+  # Attach layers: Python dependencies + Shared code
+  layers = [
+    module.lambda_layer.layer_arn,
+    module.shared_code_layer.layer_arn
+  ]
+
+  # Don't bundle shared code - use layer instead
+  bundle_shared_code = false
+
   environment_variables = {
-    SOURCE_BUCKET        = module.s3.source_docs_bucket_name
-    PROCESSED_BUCKET     = module.s3.processed_chunks_bucket_name
-    DB_CLUSTER_ENDPOINT  = module.aurora.cluster_endpoint
-    DB_NAME              = module.aurora.database_name
-    DB_MASTER_USERNAME   = module.aurora.master_username
+    SOURCE_BUCKET          = module.s3.source_docs_bucket_name
+    PROCESSED_BUCKET       = module.s3.processed_chunks_bucket_name
+    DB_CLUSTER_ENDPOINT    = module.aurora.cluster_endpoint
+    DB_NAME                = module.aurora.database_name
+    DB_MASTER_USERNAME     = module.aurora.master_username
     DB_PASSWORD_SECRET_ARN = module.aurora.master_password_secret_arn
-    AWS_ACCOUNT_ID       = data.aws_caller_identity.current.account_id
+    AWS_ACCOUNT_ID         = data.aws_caller_identity.current.account_id
     # Note: AWS_REGION is automatically set by Lambda runtime
   }
-  
+
   vpc_config = {
     subnet_ids         = module.vpc.private_subnet_ids
     security_group_ids = [module.vpc.lambda_security_group_id]
   }
-  
+
   tags = {
     Component = "document-processing"
     Function  = "ingestion"
   }
-  
+
   depends_on = [
     module.aurora,
     module.s3,
     module.vpc,
-    module.iam
+    module.iam,
+    module.lambda_layer,
+    module.shared_code_layer
   ]
 }
 
@@ -238,7 +293,7 @@ module "document_processor_lambda" {
 resource "aws_s3_bucket_notification" "document_processor_trigger" {
   bucket = module.s3.source_docs_bucket_name
 
-  eventbridge = true  # Enable EventBridge notifications
+  eventbridge = true # Enable EventBridge notifications
 }
 
 # EventBridge Rule to trigger Lambda on S3 object creation
@@ -296,44 +351,270 @@ resource "aws_lambda_permission" "eventbridge_invoke_document_processor" {
 module "book_upload_lambda" {
   source = "../../modules/lambda"
 
-  project_name = local.project_name
-  environment  = local.environment
+  project_name  = local.project_name
+  environment   = local.environment
   function_name = "book-upload"
-  
-  handler = "handler.lambda_handler"
-  runtime = "python3.11"
-  timeout = 60  # 1 minute (enough for upload)
-  memory_size = 256  # 256MB sufficient for upload handling
-  
+
+  handler     = "handler.lambda_handler"
+  runtime     = "python3.11"
+  timeout     = 120 # 2 minutes (needed for LLM metadata extraction)
+  memory_size = 256 # 256MB sufficient for upload handling
+
   source_path = "${path.module}/../../../src/lambda/book_upload"
-  
+
   # Use shared Lambda execution role
   role_arn = module.iam.lambda_execution_role_arn
-  
-  # Attach Python dependencies layer
-  layers = [module.lambda_layer.layer_arn]
-  
+
+  # Attach layers: Python dependencies + Shared code
+  layers = [
+    module.lambda_layer.layer_arn,
+    module.shared_code_layer.layer_arn
+  ]
+
+  # Don't bundle shared code - use layer instead
+  bundle_shared_code = false
+
   environment_variables = {
-    SOURCE_BUCKET        = module.s3.source_docs_bucket_name
-    DB_CLUSTER_ENDPOINT  = module.aurora.cluster_endpoint
-    DB_NAME              = module.aurora.database_name
-    DB_MASTER_USERNAME   = module.aurora.master_username
+    SOURCE_BUCKET          = module.s3.source_docs_bucket_name
+    DB_CLUSTER_ENDPOINT    = module.aurora.cluster_endpoint
+    DB_NAME                = module.aurora.database_name
+    DB_MASTER_USERNAME     = module.aurora.master_username
     DB_PASSWORD_SECRET_ARN = module.aurora.master_password_secret_arn
+    # API Gateway URL - hardcoded to avoid circular dependency with api_gateway module
+    # TODO: Use module.api_gateway.api_url after resolving circular dependency
+    API_GATEWAY_URL = "https://xp2vbfyu3f.execute-api.${data.aws_region.current.name}.amazonaws.com/${local.environment}"
+    AWS_ACCOUNT_ID  = data.aws_caller_identity.current.account_id
     # Note: AWS_REGION is automatically set by Lambda runtime
   }
-  
-  # No VPC needed for book upload (only needs S3 access)
-  vpc_config = null
-  
+
+  # VPC config needed for database access (to store cover image)
+  vpc_config = {
+    subnet_ids         = module.vpc.private_subnet_ids
+    security_group_ids = [module.vpc.lambda_security_group_id]
+  }
+
   tags = {
     Component = "book-upload"
     Function  = "ingestion"
   }
-  
+
   depends_on = [
     module.s3,
     module.aurora,
-    module.iam
+    module.vpc,
+    module.iam,
+    module.lambda_layer,
+    module.shared_code_layer
+  ]
+}
+
+# Books List Lambda (for fetching all books)
+module "books_list_lambda" {
+  source = "../../modules/lambda"
+
+  project_name  = local.project_name
+  environment   = local.environment
+  function_name = "books-list"
+
+  handler     = "handler.lambda_handler"
+  runtime     = "python3.11"
+  timeout     = 30  # 30 seconds (should be fast)
+  memory_size = 256 # 256MB sufficient
+
+  source_path = "${path.module}/../../../src/lambda/books_list"
+
+  # Use shared Lambda execution role
+  role_arn = module.iam.lambda_execution_role_arn
+
+  # Attach layers: Python dependencies + Shared code
+  layers = [
+    module.lambda_layer.layer_arn,
+    module.shared_code_layer.layer_arn
+  ]
+
+  # Don't bundle shared code - use layer instead
+  bundle_shared_code = false
+
+  environment_variables = {
+    DB_CLUSTER_ENDPOINT    = module.aurora.cluster_endpoint
+    DB_NAME                = module.aurora.database_name
+    DB_MASTER_USERNAME     = module.aurora.master_username
+    DB_PASSWORD_SECRET_ARN = module.aurora.master_password_secret_arn
+    # Note: AWS_REGION is automatically set by Lambda runtime
+  }
+
+  # VPC config needed for database access
+  vpc_config = {
+    subnet_ids         = module.vpc.private_subnet_ids
+    security_group_ids = [module.vpc.lambda_security_group_id]
+  }
+
+  tags = {
+    Component = "books"
+    Function  = "query"
+  }
+
+  depends_on = [
+    module.aurora,
+    module.vpc,
+    module.iam,
+    module.lambda_layer,
+    module.shared_code_layer
+  ]
+}
+
+# Tunnel Status Lambda (stub endpoint - tunnel feature not used in AWS)
+module "tunnel_status_lambda" {
+  source = "../../modules/lambda"
+
+  project_name  = local.project_name
+  environment   = local.environment
+  function_name = "tunnel-status"
+
+  handler     = "handler.lambda_handler"
+  runtime     = "python3.11"
+  timeout     = 10  # Very fast stub endpoint
+  memory_size = 128 # Minimal memory needed
+
+  source_path = "${path.module}/../../../src/lambda/tunnel_status"
+
+  # Use shared Lambda execution role
+  role_arn = module.iam.lambda_execution_role_arn
+
+  # Attach Python dependencies layer for shared utilities
+  # Attach layers: Python dependencies + Shared code
+  layers = [
+    module.lambda_layer.layer_arn,
+    module.shared_code_layer.layer_arn
+  ]
+
+  # Don't bundle shared code - use layer instead
+  bundle_shared_code = false
+
+  # No environment variables needed
+  environment_variables = {}
+
+  # No VPC needed for stub endpoint
+  vpc_config = null
+
+  tags = {
+    Component = "tunnel"
+    Function  = "status-stub"
+  }
+
+  depends_on = [
+    module.iam,
+    module.lambda_layer,
+    module.shared_code_layer
+  ]
+}
+
+# Book Cover Lambda (returns cover images from S3 or 404)
+module "book_cover_lambda" {
+  source = "../../modules/lambda"
+
+  project_name  = local.project_name
+  environment   = local.environment
+  function_name = "book-cover"
+
+  handler     = "handler.lambda_handler"
+  runtime     = "python3.11"
+  timeout     = 10  # Fast endpoint
+  memory_size = 256 # Sufficient for image handling
+
+  source_path = "${path.module}/../../../src/lambda/book_cover"
+
+  # Use shared Lambda execution role
+  role_arn = module.iam.lambda_execution_role_arn
+
+  # Attach Python dependencies layer for shared utilities
+  # Attach layers: Python dependencies + Shared code
+  layers = [
+    module.lambda_layer.layer_arn,
+    module.shared_code_layer.layer_arn
+  ]
+
+  # Don't bundle shared code - use layer instead
+  bundle_shared_code = false
+
+  # Environment variables for database access
+  environment_variables = {
+    DB_CLUSTER_ENDPOINT    = module.aurora.cluster_endpoint
+    DB_NAME                = module.aurora.database_name
+    DB_MASTER_USERNAME     = module.aurora.master_username
+    DB_PASSWORD_SECRET_ARN = module.aurora.master_password_secret_arn
+  }
+
+  # VPC config needed for database access
+  vpc_config = {
+    subnet_ids         = module.vpc.private_subnet_ids
+    security_group_ids = [module.vpc.lambda_security_group_id]
+  }
+
+  tags = {
+    Component = "books"
+    Function  = "cover"
+  }
+
+  depends_on = [
+    module.aurora,
+    module.vpc,
+    module.iam,
+    module.lambda_layer,
+    module.shared_code_layer
+  ]
+}
+
+# Book Delete Lambda
+module "book_delete_lambda" {
+  source = "../../modules/lambda"
+
+  project_name  = local.project_name
+  environment   = local.environment
+  function_name = "book-delete"
+
+  handler     = "handler.lambda_handler"
+  runtime     = "python3.11"
+  timeout     = 30 # May need time for cascading deletes
+  memory_size = 256
+
+  source_path = "${path.module}/../../../src/lambda/book_delete"
+
+  # Use shared Lambda execution role
+  role_arn = module.iam.lambda_execution_role_arn
+
+  # Attach layers: Python dependencies + Shared code
+  layers = [
+    module.lambda_layer.layer_arn,
+    module.shared_code_layer.layer_arn
+  ]
+
+  # Don't bundle shared code - use layer instead
+  bundle_shared_code = false
+
+  environment_variables = {
+    DB_CLUSTER_ENDPOINT    = module.aurora.cluster_endpoint
+    DB_NAME                = module.aurora.database_name
+    DB_MASTER_USERNAME     = module.aurora.master_username
+    DB_PASSWORD_SECRET_ARN = module.aurora.master_password_secret_arn
+  }
+
+  vpc_config = {
+    subnet_ids         = module.vpc.private_subnet_ids
+    security_group_ids = [module.vpc.lambda_security_group_id]
+  }
+
+  tags = {
+    Component = "books"
+    Function  = "delete"
+  }
+
+  depends_on = [
+    module.aurora,
+    module.vpc,
+    module.iam,
+    module.lambda_layer,
+    module.shared_code_layer
   ]
 }
 
@@ -341,96 +622,111 @@ module "book_upload_lambda" {
 module "schema_init_lambda" {
   source = "../../modules/lambda"
 
-  project_name = local.project_name
-  environment  = local.environment
+  project_name  = local.project_name
+  environment   = local.environment
   function_name = "schema-init"
-  
-  handler = "handler.lambda_handler"
-  runtime = "python3.11"
-  timeout = 60  # 1 minute (enough for schema creation)
-  memory_size = 256  # 256MB sufficient
-  
+
+  handler     = "handler.lambda_handler"
+  runtime     = "python3.11"
+  timeout     = 60  # 1 minute (enough for schema creation)
+  memory_size = 256 # 256MB sufficient
+
   source_path = "${path.module}/../../../src/lambda/schema_init"
-  
+
   # Use shared Lambda execution role
   role_arn = module.iam.lambda_execution_role_arn
-  
-  # Attach Python dependencies layer
-  layers = [module.lambda_layer.layer_arn]
-  
+
+  # Attach layers: Python dependencies + Shared code
+  layers = [
+    module.lambda_layer.layer_arn,
+    module.shared_code_layer.layer_arn
+  ]
+
+  # Don't bundle shared code - use layer instead
+  bundle_shared_code = false
+
   environment_variables = {
-    DB_CLUSTER_ENDPOINT  = module.aurora.cluster_endpoint
-    DB_NAME              = module.aurora.database_name
-    DB_MASTER_USERNAME   = module.aurora.master_username
+    DB_CLUSTER_ENDPOINT    = module.aurora.cluster_endpoint
+    DB_NAME                = module.aurora.database_name
+    DB_MASTER_USERNAME     = module.aurora.master_username
     DB_PASSWORD_SECRET_ARN = module.aurora.master_password_secret_arn
     # Note: AWS_REGION is automatically set by Lambda runtime
   }
-  
+
   # VPC config needed for database access
   vpc_config = {
     subnet_ids         = module.vpc.private_subnet_ids
     security_group_ids = [module.vpc.lambda_security_group_id]
   }
-  
+
   tags = {
     Component = "schema-init"
     Function  = "database"
   }
-  
+
   depends_on = [
     module.aurora,
     module.iam,
     module.vpc,
-    module.lambda_layer # Ensure layer is built before Lambda
+    module.lambda_layer,     # Ensure Python deps layer is built
+    module.shared_code_layer # Ensure shared code layer is built
   ]
 }
 
 # Connection Test Lambda (for testing infrastructure connectivity)
+# TESTING: Using shared code layer instead of bundling (Phase 2 of migration)
 module "connection_test_lambda" {
   source = "../../modules/lambda"
 
-  project_name = local.project_name
-  environment  = local.environment
+  project_name  = local.project_name
+  environment   = local.environment
   function_name = "connection-test"
-  
-  handler = "handler.lambda_handler"
-  runtime = "python3.11"
-  timeout = 60  # 1 minute (enough for tests)
-  memory_size = 256  # 256MB sufficient for testing
-  
+
+  handler     = "handler.lambda_handler"
+  runtime     = "python3.11"
+  timeout     = 60  # 1 minute (enough for tests)
+  memory_size = 256 # 256MB sufficient for testing
+
   source_path = "${path.module}/../../../src/lambda/connection_test"
-  
+
   # Use shared Lambda execution role
   role_arn = module.iam.lambda_execution_role_arn
-  
-  # Attach Python dependencies layer
-  layers = [module.lambda_layer.layer_arn]
-  
+
+  # Attach layers: Python dependencies + Shared code
+  layers = [
+    module.lambda_layer.layer_arn,
+    module.shared_code_layer.layer_arn
+  ]
+
+  # Don't bundle shared code - use layer instead
+  bundle_shared_code = false
+
   environment_variables = {
-    DB_CLUSTER_ENDPOINT  = module.aurora.cluster_endpoint
-    DB_NAME              = module.aurora.database_name
-    DB_MASTER_USERNAME   = module.aurora.master_username
+    DB_CLUSTER_ENDPOINT    = module.aurora.cluster_endpoint
+    DB_NAME                = module.aurora.database_name
+    DB_MASTER_USERNAME     = module.aurora.master_username
     DB_PASSWORD_SECRET_ARN = module.aurora.master_password_secret_arn
-    AWS_ACCOUNT_ID       = data.aws_caller_identity.current.account_id
+    AWS_ACCOUNT_ID         = data.aws_caller_identity.current.account_id
     # Note: AWS_REGION is automatically set by Lambda runtime
   }
-  
+
   # VPC config needed for database access
   vpc_config = {
     subnet_ids         = module.vpc.private_subnet_ids
     security_group_ids = [module.vpc.lambda_security_group_id]
   }
-  
+
   tags = {
     Component = "connection-test"
     Function  = "testing"
   }
-  
+
   depends_on = [
     module.aurora,
     module.iam,
     module.vpc,
-    module.lambda_layer # Ensure layer is built before Lambda
+    module.lambda_layer,     # Ensure Python deps layer is built
+    module.shared_code_layer # Ensure shared code layer is built
   ]
 }
 
@@ -438,43 +734,52 @@ module "connection_test_lambda" {
 module "db_check_lambda" {
   source = "../../modules/lambda"
 
-  project_name = local.project_name
-  environment  = local.environment
+  project_name  = local.project_name
+  environment   = local.environment
   function_name = "db-check"
-  
-  handler = "handler.lambda_handler"
-  runtime = "python3.11"
-  timeout = 60
+
+  handler     = "handler.lambda_handler"
+  runtime     = "python3.11"
+  timeout     = 60
   memory_size = 256
-  
+
   source_path = "${path.module}/../../../src/lambda/db_check"
-  
+
   role_arn = module.iam.lambda_execution_role_arn
-  layers = [module.lambda_layer.layer_arn]
-  
+
+  # Attach layers: Python dependencies + Shared code
+  layers = [
+    module.lambda_layer.layer_arn,
+    module.shared_code_layer.layer_arn
+  ]
+
+  # Don't bundle shared code - use layer instead
+  bundle_shared_code = false
+
   environment_variables = {
-    DB_CLUSTER_ENDPOINT  = module.aurora.cluster_endpoint
-    DB_NAME              = module.aurora.database_name
-    DB_MASTER_USERNAME   = module.aurora.master_username
+    DB_CLUSTER_ENDPOINT    = module.aurora.cluster_endpoint
+    DB_NAME                = module.aurora.database_name
+    DB_MASTER_USERNAME     = module.aurora.master_username
     DB_PASSWORD_SECRET_ARN = module.aurora.master_password_secret_arn
-    AWS_ACCOUNT_ID       = data.aws_caller_identity.current.account_id
+    AWS_ACCOUNT_ID         = data.aws_caller_identity.current.account_id
   }
-  
+
   vpc_config = {
     subnet_ids         = module.vpc.private_subnet_ids
     security_group_ids = [module.vpc.lambda_security_group_id]
   }
-  
+
   tags = {
     Component = "database"
     Function  = "utility"
   }
-  
+
   depends_on = [
     module.aurora,
     module.vpc,
     module.iam,
-    module.lambda_layer
+    module.lambda_layer,
+    module.shared_code_layer
   ]
 }
 
@@ -482,43 +787,52 @@ module "db_check_lambda" {
 module "db_check_book_ids_lambda" {
   source = "../../modules/lambda"
 
-  project_name = local.project_name
-  environment  = local.environment
+  project_name  = local.project_name
+  environment   = local.environment
   function_name = "db-check-book-ids"
-  
-  handler = "handler.lambda_handler"
-  runtime = "python3.11"
-  timeout = 30
+
+  handler     = "handler.lambda_handler"
+  runtime     = "python3.11"
+  timeout     = 30
   memory_size = 256
-  
+
   source_path = "${path.module}/../../../src/lambda/db_check_book_ids"
-  
+
   role_arn = module.iam.lambda_execution_role_arn
-  layers = [module.lambda_layer.layer_arn]
-  
+
+  # Attach layers: Python dependencies + Shared code
+  layers = [
+    module.lambda_layer.layer_arn,
+    module.shared_code_layer.layer_arn
+  ]
+
+  # Don't bundle shared code - use layer instead
+  bundle_shared_code = false
+
   environment_variables = {
-    DB_CLUSTER_ENDPOINT  = module.aurora.cluster_endpoint
-    DB_NAME              = module.aurora.database_name
-    DB_MASTER_USERNAME   = module.aurora.master_username
+    DB_CLUSTER_ENDPOINT    = module.aurora.cluster_endpoint
+    DB_NAME                = module.aurora.database_name
+    DB_MASTER_USERNAME     = module.aurora.master_username
     DB_PASSWORD_SECRET_ARN = module.aurora.master_password_secret_arn
-    AWS_ACCOUNT_ID       = data.aws_caller_identity.current.account_id
+    AWS_ACCOUNT_ID         = data.aws_caller_identity.current.account_id
   }
-  
+
   vpc_config = {
     subnet_ids         = module.vpc.private_subnet_ids
     security_group_ids = [module.vpc.lambda_security_group_id]
   }
-  
+
   tags = {
     Component = "database"
     Function  = "utility"
   }
-  
+
   depends_on = [
     module.aurora,
     module.vpc,
     module.iam,
-    module.lambda_layer
+    module.lambda_layer,
+    module.shared_code_layer
   ]
 }
 
@@ -526,43 +840,52 @@ module "db_check_book_ids_lambda" {
 module "db_merge_books_lambda" {
   source = "../../modules/lambda"
 
-  project_name = local.project_name
-  environment  = local.environment
+  project_name  = local.project_name
+  environment   = local.environment
   function_name = "db-merge-books"
-  
-  handler = "handler.lambda_handler"
-  runtime = "python3.11"
-  timeout = 60
+
+  handler     = "handler.lambda_handler"
+  runtime     = "python3.11"
+  timeout     = 60
   memory_size = 256
-  
+
   source_path = "${path.module}/../../../src/lambda/db_merge_books"
-  
+
   role_arn = module.iam.lambda_execution_role_arn
-  layers = [module.lambda_layer.layer_arn]
-  
+
+  # Attach layers: Python dependencies + Shared code
+  layers = [
+    module.lambda_layer.layer_arn,
+    module.shared_code_layer.layer_arn
+  ]
+
+  # Don't bundle shared code - use layer instead
+  bundle_shared_code = false
+
   environment_variables = {
-    DB_CLUSTER_ENDPOINT  = module.aurora.cluster_endpoint
-    DB_NAME              = module.aurora.database_name
-    DB_MASTER_USERNAME   = module.aurora.master_username
+    DB_CLUSTER_ENDPOINT    = module.aurora.cluster_endpoint
+    DB_NAME                = module.aurora.database_name
+    DB_MASTER_USERNAME     = module.aurora.master_username
     DB_PASSWORD_SECRET_ARN = module.aurora.master_password_secret_arn
-    AWS_ACCOUNT_ID       = data.aws_caller_identity.current.account_id
+    AWS_ACCOUNT_ID         = data.aws_caller_identity.current.account_id
   }
-  
+
   vpc_config = {
     subnet_ids         = module.vpc.private_subnet_ids
     security_group_ids = [module.vpc.lambda_security_group_id]
   }
-  
+
   tags = {
     Component = "database"
     Function  = "utility"
   }
-  
+
   depends_on = [
     module.aurora,
     module.vpc,
     module.iam,
-    module.lambda_layer
+    module.lambda_layer,
+    module.shared_code_layer
   ]
 }
 
@@ -570,43 +893,52 @@ module "db_merge_books_lambda" {
 module "db_check_duplicates_lambda" {
   source = "../../modules/lambda"
 
-  project_name = local.project_name
-  environment  = local.environment
+  project_name  = local.project_name
+  environment   = local.environment
   function_name = "db-check-duplicates"
-  
-  handler = "handler.lambda_handler"
-  runtime = "python3.11"
-  timeout = 60
+
+  handler     = "handler.lambda_handler"
+  runtime     = "python3.11"
+  timeout     = 60
   memory_size = 512
-  
+
   source_path = "${path.module}/../../../src/lambda/db_check_duplicates"
-  
+
   role_arn = module.iam.lambda_execution_role_arn
-  layers = [module.lambda_layer.layer_arn]
-  
+
+  # Attach layers: Python dependencies + Shared code
+  layers = [
+    module.lambda_layer.layer_arn,
+    module.shared_code_layer.layer_arn
+  ]
+
+  # Don't bundle shared code - use layer instead
+  bundle_shared_code = false
+
   environment_variables = {
-    DB_CLUSTER_ENDPOINT  = module.aurora.cluster_endpoint
-    DB_NAME              = module.aurora.database_name
-    DB_MASTER_USERNAME   = module.aurora.master_username
+    DB_CLUSTER_ENDPOINT    = module.aurora.cluster_endpoint
+    DB_NAME                = module.aurora.database_name
+    DB_MASTER_USERNAME     = module.aurora.master_username
     DB_PASSWORD_SECRET_ARN = module.aurora.master_password_secret_arn
-    AWS_ACCOUNT_ID       = data.aws_caller_identity.current.account_id
+    AWS_ACCOUNT_ID         = data.aws_caller_identity.current.account_id
   }
-  
+
   vpc_config = {
     subnet_ids         = module.vpc.private_subnet_ids
     security_group_ids = [module.vpc.lambda_security_group_id]
   }
-  
+
   tags = {
     Component = "database"
     Function  = "utility"
   }
-  
+
   depends_on = [
     module.aurora,
     module.vpc,
     module.iam,
-    module.lambda_layer
+    module.lambda_layer,
+    module.shared_code_layer
   ]
 }
 
@@ -614,43 +946,52 @@ module "db_check_duplicates_lambda" {
 module "db_cleanup_lambda" {
   source = "../../modules/lambda"
 
-  project_name = local.project_name
-  environment  = local.environment
+  project_name  = local.project_name
+  environment   = local.environment
   function_name = "db-cleanup"
-  
-  handler = "handler.lambda_handler"
-  runtime = "python3.11"
-  timeout = 60
+
+  handler     = "handler.lambda_handler"
+  runtime     = "python3.11"
+  timeout     = 60
   memory_size = 256
-  
+
   source_path = "${path.module}/../../../src/lambda/db_cleanup"
-  
+
   role_arn = module.iam.lambda_execution_role_arn
-  layers = [module.lambda_layer.layer_arn]
-  
+
+  # Attach layers: Python dependencies + Shared code
+  layers = [
+    module.lambda_layer.layer_arn,
+    module.shared_code_layer.layer_arn
+  ]
+
+  # Don't bundle shared code - use layer instead
+  bundle_shared_code = false
+
   environment_variables = {
-    DB_CLUSTER_ENDPOINT  = module.aurora.cluster_endpoint
-    DB_NAME              = module.aurora.database_name
-    DB_MASTER_USERNAME   = module.aurora.master_username
+    DB_CLUSTER_ENDPOINT    = module.aurora.cluster_endpoint
+    DB_NAME                = module.aurora.database_name
+    DB_MASTER_USERNAME     = module.aurora.master_username
     DB_PASSWORD_SECRET_ARN = module.aurora.master_password_secret_arn
-    AWS_ACCOUNT_ID       = data.aws_caller_identity.current.account_id
+    AWS_ACCOUNT_ID         = data.aws_caller_identity.current.account_id
   }
-  
+
   vpc_config = {
     subnet_ids         = module.vpc.private_subnet_ids
     security_group_ids = [module.vpc.lambda_security_group_id]
   }
-  
+
   tags = {
     Component = "database"
     Function  = "utility"
   }
-  
+
   depends_on = [
     module.aurora,
     module.vpc,
     module.iam,
-    module.lambda_layer
+    module.lambda_layer,
+    module.shared_code_layer
   ]
 }
 
@@ -658,43 +999,52 @@ module "db_cleanup_lambda" {
 module "db_deduplicate_chunks_lambda" {
   source = "../../modules/lambda"
 
-  project_name = local.project_name
-  environment  = local.environment
+  project_name  = local.project_name
+  environment   = local.environment
   function_name = "db-deduplicate-chunks"
-  
-  handler = "handler.lambda_handler"
-  runtime = "python3.11"
-  timeout = 120
+
+  handler     = "handler.lambda_handler"
+  runtime     = "python3.11"
+  timeout     = 120
   memory_size = 512
-  
+
   source_path = "${path.module}/../../../src/lambda/db_deduplicate_chunks"
-  
+
   role_arn = module.iam.lambda_execution_role_arn
-  layers = [module.lambda_layer.layer_arn]
-  
+
+  # Attach layers: Python dependencies + Shared code
+  layers = [
+    module.lambda_layer.layer_arn,
+    module.shared_code_layer.layer_arn
+  ]
+
+  # Don't bundle shared code - use layer instead
+  bundle_shared_code = false
+
   environment_variables = {
-    DB_CLUSTER_ENDPOINT  = module.aurora.cluster_endpoint
-    DB_NAME              = module.aurora.database_name
-    DB_MASTER_USERNAME   = module.aurora.master_username
+    DB_CLUSTER_ENDPOINT    = module.aurora.cluster_endpoint
+    DB_NAME                = module.aurora.database_name
+    DB_MASTER_USERNAME     = module.aurora.master_username
     DB_PASSWORD_SECRET_ARN = module.aurora.master_password_secret_arn
-    AWS_ACCOUNT_ID       = data.aws_caller_identity.current.account_id
+    AWS_ACCOUNT_ID         = data.aws_caller_identity.current.account_id
   }
-  
+
   vpc_config = {
     subnet_ids         = module.vpc.private_subnet_ids
     security_group_ids = [module.vpc.lambda_security_group_id]
   }
-  
+
   tags = {
     Component = "database"
     Function  = "utility"
   }
-  
+
   depends_on = [
     module.aurora,
     module.vpc,
     module.iam,
-    module.lambda_layer
+    module.lambda_layer,
+    module.shared_code_layer
   ]
 }
 
@@ -702,43 +1052,52 @@ module "db_deduplicate_chunks_lambda" {
 module "db_update_book_lambda" {
   source = "../../modules/lambda"
 
-  project_name = local.project_name
-  environment  = local.environment
+  project_name  = local.project_name
+  environment   = local.environment
   function_name = "db-update-book"
-  
-  handler = "handler.lambda_handler"
-  runtime = "python3.11"
-  timeout = 30
+
+  handler     = "handler.lambda_handler"
+  runtime     = "python3.11"
+  timeout     = 30
   memory_size = 256
-  
+
   source_path = "${path.module}/../../../src/lambda/db_update_book"
-  
+
   role_arn = module.iam.lambda_execution_role_arn
-  layers = [module.lambda_layer.layer_arn]
-  
+
+  # Attach layers: Python dependencies + Shared code
+  layers = [
+    module.lambda_layer.layer_arn,
+    module.shared_code_layer.layer_arn
+  ]
+
+  # Don't bundle shared code - use layer instead
+  bundle_shared_code = false
+
   environment_variables = {
-    DB_CLUSTER_ENDPOINT  = module.aurora.cluster_endpoint
-    DB_NAME              = module.aurora.database_name
-    DB_MASTER_USERNAME   = module.aurora.master_username
+    DB_CLUSTER_ENDPOINT    = module.aurora.cluster_endpoint
+    DB_NAME                = module.aurora.database_name
+    DB_MASTER_USERNAME     = module.aurora.master_username
     DB_PASSWORD_SECRET_ARN = module.aurora.master_password_secret_arn
-    AWS_ACCOUNT_ID       = data.aws_caller_identity.current.account_id
+    AWS_ACCOUNT_ID         = data.aws_caller_identity.current.account_id
   }
-  
+
   vpc_config = {
     subnet_ids         = module.vpc.private_subnet_ids
     security_group_ids = [module.vpc.lambda_security_group_id]
   }
-  
+
   tags = {
     Component = "database"
     Function  = "utility"
   }
-  
+
   depends_on = [
     module.aurora,
     module.vpc,
     module.iam,
-    module.lambda_layer
+    module.lambda_layer,
+    module.shared_code_layer
   ]
 }
 
@@ -746,35 +1105,35 @@ module "db_update_book_lambda" {
 module "ai_services_manager_lambda" {
   source = "../../modules/lambda"
 
-  project_name = local.project_name
-  environment  = local.environment
+  project_name  = local.project_name
+  environment   = local.environment
   function_name = "ai-services-manager"
-  
-  handler = "handler.lambda_handler"
-  runtime = "python3.11"
-  timeout = 60  # 1 minute
-  memory_size = 256  # 256MB sufficient
-  
+
+  handler     = "handler.lambda_handler"
+  runtime     = "python3.11"
+  timeout     = 60  # 1 minute
+  memory_size = 256 # 256MB sufficient
+
   source_path = "${path.module}/../../../src/lambda/ai_services_manager"
-  
+
   # Use shared Lambda execution role
   role_arn = module.iam.lambda_execution_role_arn
-  
+
   environment_variables = {
     VPC_ID       = module.vpc.vpc_id
     PROJECT_NAME = local.project_name
     ENVIRONMENT  = local.environment
     # Note: AWS_REGION is automatically set by Lambda, don't set it manually
   }
-  
+
   # No VPC needed (manages VPC endpoints, doesn't need to be in VPC)
   vpc_config = null
-  
+
   tags = {
     Component = "ai-services-manager"
     Function  = "infrastructure"
   }
-  
+
   depends_on = [
     module.vpc,
     module.iam
@@ -785,50 +1144,57 @@ module "ai_services_manager_lambda" {
 module "chat_handler_lambda" {
   source = "../../modules/lambda"
 
-  project_name = local.project_name
-  environment  = local.environment
+  project_name  = local.project_name
+  environment   = local.environment
   function_name = "chat-handler"
-  
-  handler = "handler.lambda_handler"
-  runtime = "python3.11"
-  timeout = 300  # 5 minutes (RAG + LLM can take time)
-  memory_size = 1024  # 1GB for RAG processing and LLM calls
-  
+
+  handler     = "handler.lambda_handler"
+  runtime     = "python3.11"
+  timeout     = 300  # 5 minutes (RAG + LLM can take time)
+  memory_size = 1024 # 1GB for RAG processing and LLM calls
+
   source_path = "${path.module}/../../../src/lambda/chat_handler"
-  
+
   # Use shared Lambda execution role
   role_arn = module.iam.lambda_execution_role_arn
-  
-  # Attach Python dependencies layer
-  layers = [module.lambda_layer.layer_arn]
-  
+
+  # Attach layers: Python dependencies + Shared code
+  layers = [
+    module.lambda_layer.layer_arn,
+    module.shared_code_layer.layer_arn
+  ]
+
+  # Don't bundle shared code - use layer instead
+  bundle_shared_code = false
+
   environment_variables = {
-    DB_CLUSTER_ENDPOINT     = module.aurora.cluster_endpoint
-    DB_NAME                 = module.aurora.database_name
-    DB_MASTER_USERNAME      = module.aurora.master_username
-    DB_PASSWORD_SECRET_ARN  = module.aurora.master_password_secret_arn
+    DB_CLUSTER_ENDPOINT          = module.aurora.cluster_endpoint
+    DB_NAME                      = module.aurora.database_name
+    DB_MASTER_USERNAME           = module.aurora.master_username
+    DB_PASSWORD_SECRET_ARN       = module.aurora.master_password_secret_arn
     DYNAMODB_SESSIONS_TABLE_NAME = module.dynamodb.table_name
-    AWS_ACCOUNT_ID          = data.aws_caller_identity.current.account_id
+    AWS_ACCOUNT_ID               = data.aws_caller_identity.current.account_id
     # Note: AWS_REGION is automatically set by Lambda runtime
   }
-  
+
   # Needs VPC access for Aurora and Bedrock VPC endpoints
   vpc_config = {
     subnet_ids         = module.vpc.private_subnet_ids
     security_group_ids = [module.vpc.lambda_security_group_id]
   }
-  
+
   tags = {
     Component = "chat"
     Function  = "rag"
   }
-  
+
   depends_on = [
     module.aurora,
     module.dynamodb,
     module.vpc,
     module.iam,
-    module.lambda_layer
+    module.lambda_layer,
+    module.shared_code_layer
   ]
 }
 
@@ -840,8 +1206,15 @@ module "api_gateway" {
   environment  = local.environment
   api_name     = "${local.project_name}-${local.environment}-api"
 
-  cors_origins = ["*"]  # TODO: Restrict to frontend domain in prod
-  cors_methods = ["GET", "POST", "PUT", "DELETE", "OPTIONS"]
+  # Cognito authorizer
+  cognito_user_pool_arn = module.cognito.user_pool_arn
+
+  cors_origins = [
+    "http://localhost:5173" # Frontend dev server
+    # TODO: Add production frontend URL when deploying
+    # Note: Cannot use "*" when using Authorization headers - must specify exact origin
+  ]
+  cors_methods = ["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"]
   cors_headers = [
     "Content-Type",
     "Authorization",
@@ -855,65 +1228,119 @@ module "api_gateway" {
 
   binary_media_types = [
     "application/pdf",
-    "multipart/form-data"
+    "multipart/form-data",
+    "image/jpeg",
+    "image/jpg",
+    "image/png",
+    "image/gif",
+    "image/webp"
   ]
 
   endpoints = {
+    books_list = {
+      method               = "GET"
+      lambda_function_name = module.books_list_lambda.function_name
+      lambda_invoke_arn    = module.books_list_lambda.function_invoke_arn
+      path                 = "books"
+      require_auth         = true # Require authentication
+    }
     book_upload = {
-      method              = "POST"
+      method               = "POST"
       lambda_function_name = module.book_upload_lambda.function_name
-      lambda_invoke_arn   = module.book_upload_lambda.function_invoke_arn
-      path                = "books/upload"
-      require_auth        = false  # TODO: Add Cognito auth in prod
+      lambda_invoke_arn    = module.book_upload_lambda.function_invoke_arn
+      path                 = "books/upload"
+      require_auth         = true # Require authentication for book upload
+    }
+    book_upload_initial = {
+      method               = "POST"
+      lambda_function_name = module.book_upload_lambda.function_name
+      lambda_invoke_arn    = module.book_upload_lambda.function_invoke_arn
+      path                 = "books/upload-initial"
+      require_auth         = true # Require authentication for book upload
     }
     ai_services_status = {
-      method              = "GET"
+      method               = "GET"
       lambda_function_name = module.ai_services_manager_lambda.function_name
-      lambda_invoke_arn   = module.ai_services_manager_lambda.function_invoke_arn
-      path                = "ai-services/status"
-      require_auth        = false  # TODO: Add Cognito auth in prod
+      lambda_invoke_arn    = module.ai_services_manager_lambda.function_invoke_arn
+      path                 = "ai-services/status"
+      require_auth         = true # Require authentication
     }
     ai_services_enable = {
-      method              = "POST"
+      method               = "POST"
       lambda_function_name = module.ai_services_manager_lambda.function_name
-      lambda_invoke_arn   = module.ai_services_manager_lambda.function_invoke_arn
-      path                = "ai-services/enable"
-      require_auth        = false  # TODO: Add Cognito auth in prod
+      lambda_invoke_arn    = module.ai_services_manager_lambda.function_invoke_arn
+      path                 = "ai-services/enable"
+      require_auth         = true # Require authentication
     }
     ai_services_disable = {
-      method              = "POST"
+      method               = "POST"
       lambda_function_name = module.ai_services_manager_lambda.function_name
-      lambda_invoke_arn   = module.ai_services_manager_lambda.function_invoke_arn
-      path                = "ai-services/disable"
-      require_auth        = false  # TODO: Add Cognito auth in prod
+      lambda_invoke_arn    = module.ai_services_manager_lambda.function_invoke_arn
+      path                 = "ai-services/disable"
+      require_auth         = true # Require authentication
     }
     chat_message = {
-      method              = "POST"
+      method               = "POST"
       lambda_function_name = module.chat_handler_lambda.function_name
-      lambda_invoke_arn   = module.chat_handler_lambda.function_invoke_arn
-      path                = "chat"
-      require_auth        = false  # TODO: Add Cognito auth in prod
+      lambda_invoke_arn    = module.chat_handler_lambda.function_invoke_arn
+      path                 = "chat"
+      require_auth         = true # Require authentication for chat
     }
     course_request = {
-      method              = "POST"
+      method               = "POST"
       lambda_function_name = module.course_request_handler_lambda.function_name
-      lambda_invoke_arn   = module.course_request_handler_lambda.function_invoke_arn
-      path                = "courses"
-      require_auth        = false  # TODO: Add Cognito auth in prod
+      lambda_invoke_arn    = module.course_request_handler_lambda.function_invoke_arn
+      path                 = "courses"
+      require_auth         = true # Require authentication for course generation
     }
     course_get = {
-      method              = "GET"
+      method               = "GET"
       lambda_function_name = module.course_retriever_lambda.function_name
-      lambda_invoke_arn   = module.course_retriever_lambda.function_invoke_arn
-      path                = "course"
-      require_auth        = false  # TODO: Add Cognito auth in prod
+      lambda_invoke_arn    = module.course_retriever_lambda.function_invoke_arn
+      path                 = "course"
+      require_auth         = true # Require authentication
     }
     course_status = {
-      method              = "GET"
+      method               = "GET"
       lambda_function_name = module.course_status_handler_lambda.function_name
-      lambda_invoke_arn   = module.course_status_handler_lambda.function_invoke_arn
-      path                = "course-status/{courseId}"
-      require_auth        = false  # TODO: Add Cognito auth in prod
+      lambda_invoke_arn    = module.course_status_handler_lambda.function_invoke_arn
+      path                 = "course-status/{courseId}"
+      require_auth         = true # Require authentication
+    }
+    tunnel_status = {
+      method               = "GET"
+      lambda_function_name = module.tunnel_status_lambda.function_name
+      lambda_invoke_arn    = module.tunnel_status_lambda.function_invoke_arn
+      path                 = "tunnel/status"
+      require_auth         = false # Stub endpoint, no auth needed
+    }
+    book_cover = {
+      method               = "GET"
+      lambda_function_name = module.book_cover_lambda.function_name
+      lambda_invoke_arn    = module.book_cover_lambda.function_invoke_arn
+      path                 = "books/{bookId}/cover"
+      require_auth         = true # Require authentication - frontend fetches via axios with auth headers
+    }
+    book_analyze = {
+      method               = "POST"
+      lambda_function_name = module.book_upload_lambda.function_name
+      lambda_invoke_arn    = module.book_upload_lambda.function_invoke_arn
+      path                 = "books/{bookId}/analyze"
+      require_auth         = true # Require authentication for analysis
+    }
+    book_delete = {
+      method               = "DELETE"
+      lambda_function_name = module.book_delete_lambda.function_name
+      lambda_invoke_arn    = module.book_delete_lambda.function_invoke_arn
+      path                 = "books/{bookId}"
+      require_auth         = true # Require authentication for deletion
+    }
+    book_start_ingestion = {
+      method               = "POST"
+      lambda_function_name = module.book_upload_lambda.function_name
+      lambda_invoke_arn    = module.book_upload_lambda.function_invoke_arn
+      path                 = "books/{bookId}/start-ingestion"
+      require_auth         = true # Require authentication for ingestion start
     }
   }
 
@@ -922,12 +1349,17 @@ module "api_gateway" {
   }
 
   depends_on = [
+    module.books_list_lambda,
     module.book_upload_lambda,
     module.ai_services_manager_lambda,
     module.chat_handler_lambda,
     module.course_request_handler_lambda,
     module.course_retriever_lambda,
-    module.course_status_handler_lambda
+    module.course_status_handler_lambda,
+    module.tunnel_status_lambda,
+    module.book_cover_lambda,
+    module.book_delete_lambda,
+    module.cognito # Ensure Cognito is created before API Gateway
   ]
 }
 
@@ -939,28 +1371,36 @@ module "api_gateway" {
 module "course_request_handler_lambda" {
   source = "../../modules/lambda"
 
-  project_name = local.project_name
-  environment  = local.environment
+  project_name  = local.project_name
+  environment   = local.environment
   function_name = "course-request-handler"
 
-  handler = "handler.lambda_handler"
-  runtime = "python3.11"
-  timeout = 300  # 5 minutes
+  handler     = "handler.lambda_handler"
+  runtime     = "python3.11"
+  timeout     = 300 # 5 minutes
   memory_size = 1024
 
   source_path = "${path.module}/../../../src/lambda/course_request_handler"
 
   role_arn = module.iam.lambda_execution_role_arn
-  layers = [module.lambda_layer.layer_arn]
+
+  # Attach layers: Python dependencies + Shared code
+  layers = [
+    module.lambda_layer.layer_arn,
+    module.shared_code_layer.layer_arn
+  ]
+
+  # Don't bundle shared code - use layer instead
+  bundle_shared_code = false
 
   environment_variables = {
     DYNAMODB_COURSE_STATE_TABLE_NAME = module.dynamodb_course_state.table_name
     # EVENT_BUS_NAME removed - using default bus instead
-    AWS_ACCOUNT_ID                   = data.aws_caller_identity.current.account_id
-    DB_CLUSTER_ENDPOINT              = module.aurora.cluster_endpoint
-    DB_NAME                          = module.aurora.database_name
-    DB_MASTER_USERNAME               = module.aurora.master_username
-    DB_PASSWORD_SECRET_ARN           = module.aurora.master_password_secret_arn
+    AWS_ACCOUNT_ID         = data.aws_caller_identity.current.account_id
+    DB_CLUSTER_ENDPOINT    = module.aurora.cluster_endpoint
+    DB_NAME                = module.aurora.database_name
+    DB_MASTER_USERNAME     = module.aurora.master_username
+    DB_PASSWORD_SECRET_ARN = module.aurora.master_password_secret_arn
   }
 
   vpc_config = {
@@ -979,6 +1419,7 @@ module "course_request_handler_lambda" {
     module.vpc,
     module.iam,
     module.lambda_layer,
+    module.shared_code_layer,
     module.aurora
   ]
 }
@@ -987,25 +1428,33 @@ module "course_request_handler_lambda" {
 module "course_retriever_lambda" {
   source = "../../modules/lambda"
 
-  project_name = local.project_name
-  environment  = local.environment
+  project_name  = local.project_name
+  environment   = local.environment
   function_name = "course-retriever"
 
-  handler = "handler.lambda_handler"
-  runtime = "python3.11"
-  timeout = 30  # Quick database query
+  handler     = "handler.lambda_handler"
+  runtime     = "python3.11"
+  timeout     = 30 # Quick database query
   memory_size = 256
 
   source_path = "${path.module}/../../../src/lambda/course_retriever"
 
   role_arn = module.iam.lambda_execution_role_arn
-  layers = [module.lambda_layer.layer_arn]
+
+  # Attach layers: Python dependencies + Shared code
+  layers = [
+    module.lambda_layer.layer_arn,
+    module.shared_code_layer.layer_arn
+  ]
+
+  # Don't bundle shared code - use layer instead
+  bundle_shared_code = false
 
   environment_variables = {
-    DB_CLUSTER_ENDPOINT     = module.aurora.cluster_endpoint
-    DB_NAME                 = module.aurora.database_name
-    DB_MASTER_USERNAME      = module.aurora.master_username
-    DB_PASSWORD_SECRET_ARN  = module.aurora.master_password_secret_arn
+    DB_CLUSTER_ENDPOINT    = module.aurora.cluster_endpoint
+    DB_NAME                = module.aurora.database_name
+    DB_MASTER_USERNAME     = module.aurora.master_username
+    DB_PASSWORD_SECRET_ARN = module.aurora.master_password_secret_arn
   }
 
   vpc_config = {
@@ -1022,7 +1471,8 @@ module "course_retriever_lambda" {
     module.aurora,
     module.vpc,
     module.iam,
-    module.lambda_layer
+    module.lambda_layer,
+    module.shared_code_layer
   ]
 }
 
@@ -1030,19 +1480,27 @@ module "course_retriever_lambda" {
 module "course_status_handler_lambda" {
   source = "../../modules/lambda"
 
-  project_name = local.project_name
-  environment  = local.environment
+  project_name  = local.project_name
+  environment   = local.environment
   function_name = "course-status-handler"
 
-  handler = "handler.lambda_handler"
-  runtime = "python3.11"
-  timeout = 10  # Quick DynamoDB query
+  handler     = "handler.lambda_handler"
+  runtime     = "python3.11"
+  timeout     = 10 # Quick DynamoDB query
   memory_size = 256
 
   source_path = "${path.module}/../../../src/lambda/course_status_handler"
 
   role_arn = module.iam.lambda_execution_role_arn
-  layers = [module.lambda_layer.layer_arn]
+
+  # Attach layers: Python dependencies + Shared code
+  layers = [
+    module.lambda_layer.layer_arn,
+    module.shared_code_layer.layer_arn
+  ]
+
+  # Don't bundle shared code - use layer instead
+  bundle_shared_code = false
 
   environment_variables = {
     DYNAMODB_COURSE_STATE_TABLE_NAME = module.dynamodb_course_state.table_name
@@ -1056,7 +1514,8 @@ module "course_status_handler_lambda" {
   depends_on = [
     module.dynamodb_course_state,
     module.iam,
-    module.lambda_layer
+    module.lambda_layer,
+    module.shared_code_layer
   ]
 }
 
@@ -1064,28 +1523,36 @@ module "course_status_handler_lambda" {
 module "course_embedding_handler_lambda" {
   source = "../../modules/lambda"
 
-  project_name = local.project_name
-  environment  = local.environment
+  project_name  = local.project_name
+  environment   = local.environment
   function_name = "course-embedding-handler"
 
-  handler = "handler.lambda_handler"
-  runtime = "python3.11"
-  timeout = 60
+  handler     = "handler.lambda_handler"
+  runtime     = "python3.11"
+  timeout     = 60
   memory_size = 512
 
   source_path = "${path.module}/../../../src/lambda/course_embedding_handler"
 
   role_arn = module.iam.lambda_execution_role_arn
-  layers = [module.lambda_layer.layer_arn]
+
+  # Attach layers: Python dependencies + Shared code
+  layers = [
+    module.lambda_layer.layer_arn,
+    module.shared_code_layer.layer_arn
+  ]
+
+  # Don't bundle shared code - use layer instead
+  bundle_shared_code = false
 
   environment_variables = {
     DYNAMODB_COURSE_STATE_TABLE_NAME = module.dynamodb_course_state.table_name
     # EVENT_BUS_NAME removed - using default bus instead
-    AWS_ACCOUNT_ID                   = data.aws_caller_identity.current.account_id
-    DB_CLUSTER_ENDPOINT              = module.aurora.cluster_endpoint
-    DB_NAME                          = module.aurora.database_name
-    DB_MASTER_USERNAME               = module.aurora.master_username
-    DB_PASSWORD_SECRET_ARN           = module.aurora.master_password_secret_arn
+    AWS_ACCOUNT_ID         = data.aws_caller_identity.current.account_id
+    DB_CLUSTER_ENDPOINT    = module.aurora.cluster_endpoint
+    DB_NAME                = module.aurora.database_name
+    DB_MASTER_USERNAME     = module.aurora.master_username
+    DB_PASSWORD_SECRET_ARN = module.aurora.master_password_secret_arn
   }
 
   vpc_config = {
@@ -1103,7 +1570,8 @@ module "course_embedding_handler_lambda" {
     module.eventbridge,
     module.vpc,
     module.iam,
-    module.lambda_layer
+    module.lambda_layer,
+    module.shared_code_layer
   ]
 }
 
@@ -1111,28 +1579,36 @@ module "course_embedding_handler_lambda" {
 module "course_book_search_handler_lambda" {
   source = "../../modules/lambda"
 
-  project_name = local.project_name
-  environment  = local.environment
+  project_name  = local.project_name
+  environment   = local.environment
   function_name = "course-book-search-handler"
 
-  handler = "handler.lambda_handler"
-  runtime = "python3.11"
-  timeout = 300  # LLM call can take time
+  handler     = "handler.lambda_handler"
+  runtime     = "python3.11"
+  timeout     = 300 # LLM call can take time
   memory_size = 1024
 
   source_path = "${path.module}/../../../src/lambda/course_book_search_handler"
 
   role_arn = module.iam.lambda_execution_role_arn
-  layers = [module.lambda_layer.layer_arn]
+
+  # Attach layers: Python dependencies + Shared code
+  layers = [
+    module.lambda_layer.layer_arn,
+    module.shared_code_layer.layer_arn
+  ]
+
+  # Don't bundle shared code - use layer instead
+  bundle_shared_code = false
 
   environment_variables = {
     DYNAMODB_COURSE_STATE_TABLE_NAME = module.dynamodb_course_state.table_name
     # EVENT_BUS_NAME removed - using default bus instead
-    AWS_ACCOUNT_ID                   = data.aws_caller_identity.current.account_id
-    DB_CLUSTER_ENDPOINT              = module.aurora.cluster_endpoint
-    DB_NAME                          = module.aurora.database_name
-    DB_MASTER_USERNAME               = module.aurora.master_username
-    DB_PASSWORD_SECRET_ARN           = module.aurora.master_password_secret_arn
+    AWS_ACCOUNT_ID         = data.aws_caller_identity.current.account_id
+    DB_CLUSTER_ENDPOINT    = module.aurora.cluster_endpoint
+    DB_NAME                = module.aurora.database_name
+    DB_MASTER_USERNAME     = module.aurora.master_username
+    DB_PASSWORD_SECRET_ARN = module.aurora.master_password_secret_arn
   }
 
   vpc_config = {
@@ -1150,7 +1626,8 @@ module "course_book_search_handler_lambda" {
     module.eventbridge,
     module.vpc,
     module.iam,
-    module.lambda_layer
+    module.lambda_layer,
+    module.shared_code_layer
   ]
 }
 
@@ -1158,28 +1635,36 @@ module "course_book_search_handler_lambda" {
 module "course_parts_handler_lambda" {
   source = "../../modules/lambda"
 
-  project_name = local.project_name
-  environment  = local.environment
+  project_name  = local.project_name
+  environment   = local.environment
   function_name = "course-parts-handler"
 
-  handler = "handler.lambda_handler"
-  runtime = "python3.11"
-  timeout = 300  # LLM call can take time
+  handler     = "handler.lambda_handler"
+  runtime     = "python3.11"
+  timeout     = 300 # LLM call can take time
   memory_size = 1024
 
   source_path = "${path.module}/../../../src/lambda/course_parts_handler"
 
   role_arn = module.iam.lambda_execution_role_arn
-  layers = [module.lambda_layer.layer_arn]
+
+  # Attach layers: Python dependencies + Shared code
+  layers = [
+    module.lambda_layer.layer_arn,
+    module.shared_code_layer.layer_arn
+  ]
+
+  # Don't bundle shared code - use layer instead
+  bundle_shared_code = false
 
   environment_variables = {
     DYNAMODB_COURSE_STATE_TABLE_NAME = module.dynamodb_course_state.table_name
     # EVENT_BUS_NAME removed - using default bus instead
-    AWS_ACCOUNT_ID                   = data.aws_caller_identity.current.account_id
-    DB_CLUSTER_ENDPOINT              = module.aurora.cluster_endpoint
-    DB_NAME                          = module.aurora.database_name
-    DB_MASTER_USERNAME               = module.aurora.master_username
-    DB_PASSWORD_SECRET_ARN           = module.aurora.master_password_secret_arn
+    AWS_ACCOUNT_ID         = data.aws_caller_identity.current.account_id
+    DB_CLUSTER_ENDPOINT    = module.aurora.cluster_endpoint
+    DB_NAME                = module.aurora.database_name
+    DB_MASTER_USERNAME     = module.aurora.master_username
+    DB_PASSWORD_SECRET_ARN = module.aurora.master_password_secret_arn
   }
 
   vpc_config = {
@@ -1197,7 +1682,8 @@ module "course_parts_handler_lambda" {
     module.eventbridge,
     module.vpc,
     module.iam,
-    module.lambda_layer
+    module.lambda_layer,
+    module.shared_code_layer
   ]
 }
 
@@ -1205,28 +1691,36 @@ module "course_parts_handler_lambda" {
 module "course_sections_handler_lambda" {
   source = "../../modules/lambda"
 
-  project_name = local.project_name
-  environment  = local.environment
+  project_name  = local.project_name
+  environment   = local.environment
   function_name = "course-sections-handler"
 
-  handler = "handler.lambda_handler"
-  runtime = "python3.11"
-  timeout = 300  # LLM call can take time
+  handler     = "handler.lambda_handler"
+  runtime     = "python3.11"
+  timeout     = 300 # LLM call can take time
   memory_size = 1024
 
   source_path = "${path.module}/../../../src/lambda/course_sections_handler"
 
   role_arn = module.iam.lambda_execution_role_arn
-  layers = [module.lambda_layer.layer_arn]
+
+  # Attach layers: Python dependencies + Shared code
+  layers = [
+    module.lambda_layer.layer_arn,
+    module.shared_code_layer.layer_arn
+  ]
+
+  # Don't bundle shared code - use layer instead
+  bundle_shared_code = false
 
   environment_variables = {
     DYNAMODB_COURSE_STATE_TABLE_NAME = module.dynamodb_course_state.table_name
     # EVENT_BUS_NAME removed - using default bus instead
-    AWS_ACCOUNT_ID                   = data.aws_caller_identity.current.account_id
-    DB_CLUSTER_ENDPOINT              = module.aurora.cluster_endpoint
-    DB_NAME                          = module.aurora.database_name
-    DB_MASTER_USERNAME               = module.aurora.master_username
-    DB_PASSWORD_SECRET_ARN           = module.aurora.master_password_secret_arn
+    AWS_ACCOUNT_ID         = data.aws_caller_identity.current.account_id
+    DB_CLUSTER_ENDPOINT    = module.aurora.cluster_endpoint
+    DB_NAME                = module.aurora.database_name
+    DB_MASTER_USERNAME     = module.aurora.master_username
+    DB_PASSWORD_SECRET_ARN = module.aurora.master_password_secret_arn
   }
 
   vpc_config = {
@@ -1244,7 +1738,8 @@ module "course_sections_handler_lambda" {
     module.eventbridge,
     module.vpc,
     module.iam,
-    module.lambda_layer
+    module.lambda_layer,
+    module.shared_code_layer
   ]
 }
 
@@ -1252,28 +1747,36 @@ module "course_sections_handler_lambda" {
 module "course_outline_reviewer_lambda" {
   source = "../../modules/lambda"
 
-  project_name = local.project_name
-  environment  = local.environment
+  project_name  = local.project_name
+  environment   = local.environment
   function_name = "course-outline-reviewer"
 
-  handler = "handler.lambda_handler"
-  runtime = "python3.11"
-  timeout = 300  # LLM call can take time
+  handler     = "handler.lambda_handler"
+  runtime     = "python3.11"
+  timeout     = 300 # LLM call can take time
   memory_size = 1024
 
   source_path = "${path.module}/../../../src/lambda/course_outline_reviewer"
 
   role_arn = module.iam.lambda_execution_role_arn
-  layers = [module.lambda_layer.layer_arn]
+
+  # Attach layers: Python dependencies + Shared code
+  layers = [
+    module.lambda_layer.layer_arn,
+    module.shared_code_layer.layer_arn
+  ]
+
+  # Don't bundle shared code - use layer instead
+  bundle_shared_code = false
 
   environment_variables = {
     DYNAMODB_COURSE_STATE_TABLE_NAME = module.dynamodb_course_state.table_name
     # EVENT_BUS_NAME removed - using default bus instead
-    AWS_ACCOUNT_ID                   = data.aws_caller_identity.current.account_id
-    DB_CLUSTER_ENDPOINT              = module.aurora.cluster_endpoint
-    DB_NAME                          = module.aurora.database_name
-    DB_MASTER_USERNAME               = module.aurora.master_username
-    DB_PASSWORD_SECRET_ARN           = module.aurora.master_password_secret_arn
+    AWS_ACCOUNT_ID         = data.aws_caller_identity.current.account_id
+    DB_CLUSTER_ENDPOINT    = module.aurora.cluster_endpoint
+    DB_NAME                = module.aurora.database_name
+    DB_MASTER_USERNAME     = module.aurora.master_username
+    DB_PASSWORD_SECRET_ARN = module.aurora.master_password_secret_arn
   }
 
   vpc_config = {
@@ -1291,7 +1794,8 @@ module "course_outline_reviewer_lambda" {
     module.eventbridge,
     module.vpc,
     module.iam,
-    module.lambda_layer
+    module.lambda_layer,
+    module.shared_code_layer
   ]
 }
 
@@ -1299,28 +1803,36 @@ module "course_outline_reviewer_lambda" {
 module "course_storage_handler_lambda" {
   source = "../../modules/lambda"
 
-  project_name = local.project_name
-  environment  = local.environment
+  project_name  = local.project_name
+  environment   = local.environment
   function_name = "course-storage-handler"
 
-  handler = "handler.lambda_handler"
-  runtime = "python3.11"
-  timeout = 120
+  handler     = "handler.lambda_handler"
+  runtime     = "python3.11"
+  timeout     = 120
   memory_size = 512
 
   source_path = "${path.module}/../../../src/lambda/course_storage_handler"
 
   role_arn = module.iam.lambda_execution_role_arn
-  layers = [module.lambda_layer.layer_arn]
+
+  # Attach layers: Python dependencies + Shared code
+  layers = [
+    module.lambda_layer.layer_arn,
+    module.shared_code_layer.layer_arn
+  ]
+
+  # Don't bundle shared code - use layer instead
+  bundle_shared_code = false
 
   environment_variables = {
     DYNAMODB_COURSE_STATE_TABLE_NAME = module.dynamodb_course_state.table_name
-    DB_CLUSTER_ENDPOINT               = module.aurora.cluster_endpoint
-    DB_NAME                           = module.aurora.database_name
-    DB_MASTER_USERNAME                = module.aurora.master_username
-    DB_PASSWORD_SECRET_ARN            = module.aurora.master_password_secret_arn
+    DB_CLUSTER_ENDPOINT              = module.aurora.cluster_endpoint
+    DB_NAME                          = module.aurora.database_name
+    DB_MASTER_USERNAME               = module.aurora.master_username
+    DB_PASSWORD_SECRET_ARN           = module.aurora.master_password_secret_arn
     # EVENT_BUS_NAME removed - using default bus instead
-    AWS_ACCOUNT_ID                   = data.aws_caller_identity.current.account_id
+    AWS_ACCOUNT_ID = data.aws_caller_identity.current.account_id
     # Note: AWS_REGION is automatically set by Lambda runtime - don't set it manually
   }
 
@@ -1351,31 +1863,37 @@ module "course_storage_handler_lambda" {
 module "source_summary_generator_lambda" {
   source = "../../modules/lambda"
 
-  project_name = local.project_name
-  environment  = local.environment
+  project_name  = local.project_name
+  environment   = local.environment
   function_name = "source-summary-generator"
 
-  handler = "handler.lambda_handler"
-  runtime = "python3.11"
-  timeout = 900  # 15 minutes (max for Lambda) - may need multiple chapters
-  memory_size = 2048  # 2GB for PDF processing and LLM calls
+  handler     = "handler.lambda_handler"
+  runtime     = "python3.11"
+  timeout     = 900  # 15 minutes (max for Lambda) - may need multiple chapters
+  memory_size = 2048 # 2GB for PDF processing and LLM calls
 
   source_path = "${path.module}/../../../src/lambda/source_summary_generator"
 
   # Use shared Lambda execution role
   role_arn = module.iam.lambda_execution_role_arn
 
-  # Attach Python dependencies layer
-  layers = [module.lambda_layer.layer_arn]
+  # Attach layers: Python dependencies + Shared code
+  layers = [
+    module.lambda_layer.layer_arn,
+    module.shared_code_layer.layer_arn
+  ]
+
+  # Don't bundle shared code - use layer instead
+  bundle_shared_code = false
 
   environment_variables = {
-    SOURCE_BUCKET            = module.s3.source_docs_bucket_name
-    DB_CLUSTER_ENDPOINT      = module.aurora.cluster_endpoint
-    DB_NAME                  = module.aurora.database_name
-    DB_MASTER_USERNAME       = module.aurora.master_username
-    DB_PASSWORD_SECRET_ARN  = module.aurora.master_password_secret_arn
+    SOURCE_BUCKET          = module.s3.source_docs_bucket_name
+    DB_CLUSTER_ENDPOINT    = module.aurora.cluster_endpoint
+    DB_NAME                = module.aurora.database_name
+    DB_MASTER_USERNAME     = module.aurora.master_username
+    DB_PASSWORD_SECRET_ARN = module.aurora.master_password_secret_arn
     # EVENT_BUS_NAME removed - using default bus instead
-    AWS_ACCOUNT_ID          = data.aws_caller_identity.current.account_id
+    AWS_ACCOUNT_ID = data.aws_caller_identity.current.account_id
   }
 
   vpc_config = {
@@ -1404,29 +1922,35 @@ module "source_summary_generator_lambda" {
 module "source_summary_embedding_generator_lambda" {
   source = "../../modules/lambda"
 
-  project_name = local.project_name
-  environment  = local.environment
+  project_name  = local.project_name
+  environment   = local.environment
   function_name = "source-summary-embedding-generator"
 
-  handler = "handler.lambda_handler"
-  runtime = "python3.11"
-  timeout = 300  # 5 minutes
-  memory_size = 512  # Smaller memory - just embedding generation
+  handler     = "handler.lambda_handler"
+  runtime     = "python3.11"
+  timeout     = 300 # 5 minutes
+  memory_size = 512 # Smaller memory - just embedding generation
 
   source_path = "${path.module}/../../../src/lambda/source_summary_embedding_generator"
 
   # Use shared Lambda execution role
   role_arn = module.iam.lambda_execution_role_arn
 
-  # Attach Python dependencies layer
-  layers = [module.lambda_layer.layer_arn]
+  # Attach layers: Python dependencies + Shared code
+  layers = [
+    module.lambda_layer.layer_arn,
+    module.shared_code_layer.layer_arn
+  ]
+
+  # Don't bundle shared code - use layer instead
+  bundle_shared_code = false
 
   environment_variables = {
-    DB_CLUSTER_ENDPOINT      = module.aurora.cluster_endpoint
-    DB_NAME                  = module.aurora.database_name
-    DB_MASTER_USERNAME       = module.aurora.master_username
-    DB_PASSWORD_SECRET_ARN   = module.aurora.master_password_secret_arn
-    AWS_ACCOUNT_ID           = data.aws_caller_identity.current.account_id
+    DB_CLUSTER_ENDPOINT    = module.aurora.cluster_endpoint
+    DB_NAME                = module.aurora.database_name
+    DB_MASTER_USERNAME     = module.aurora.master_username
+    DB_PASSWORD_SECRET_ARN = module.aurora.master_password_secret_arn
+    AWS_ACCOUNT_ID         = data.aws_caller_identity.current.account_id
   }
 
   vpc_config = {
@@ -1443,7 +1967,8 @@ module "source_summary_embedding_generator_lambda" {
     module.aurora,
     module.vpc,
     module.iam,
-    module.lambda_layer
+    module.lambda_layer,
+    module.shared_code_layer
   ]
 }
 
@@ -1453,10 +1978,10 @@ module "source_summary_embedding_generator_lambda" {
 
 # EmbeddingGenerated → Embedding Handler
 resource "aws_cloudwatch_event_target" "embedding_generated" {
-  rule           = module.eventbridge.embedding_generated_rule_name
+  rule = module.eventbridge.embedding_generated_rule_name
   # event_bus_name omitted - using default bus
-  target_id      = "CourseEmbeddingHandler"
-  arn            = module.course_embedding_handler_lambda.function_arn
+  target_id = "CourseEmbeddingHandler"
+  arn       = module.course_embedding_handler_lambda.function_arn
 
   depends_on = [
     module.course_embedding_handler_lambda,
@@ -1466,10 +1991,10 @@ resource "aws_cloudwatch_event_target" "embedding_generated" {
 
 # BookSummariesFound → Book Search Handler
 resource "aws_cloudwatch_event_target" "book_summaries_found" {
-  rule           = module.eventbridge.book_summaries_found_rule_name
+  rule = module.eventbridge.book_summaries_found_rule_name
   # event_bus_name omitted - using default bus
-  target_id      = "CourseBookSearchHandler"
-  arn            = module.course_book_search_handler_lambda.function_arn
+  target_id = "CourseBookSearchHandler"
+  arn       = module.course_book_search_handler_lambda.function_arn
 
   depends_on = [
     module.course_book_search_handler_lambda,
@@ -1479,10 +2004,10 @@ resource "aws_cloudwatch_event_target" "book_summaries_found" {
 
 # PartsGenerated → Parts Handler
 resource "aws_cloudwatch_event_target" "parts_generated" {
-  rule           = module.eventbridge.parts_generated_rule_name
+  rule = module.eventbridge.parts_generated_rule_name
   # event_bus_name omitted - using default bus
-  target_id      = "CoursePartsHandler"
-  arn            = module.course_parts_handler_lambda.function_arn
+  target_id = "CoursePartsHandler"
+  arn       = module.course_parts_handler_lambda.function_arn
 
   depends_on = [
     module.course_parts_handler_lambda,
@@ -1492,10 +2017,10 @@ resource "aws_cloudwatch_event_target" "parts_generated" {
 
 # PartSectionsGenerated → Sections Handler
 resource "aws_cloudwatch_event_target" "part_sections_generated" {
-  rule           = module.eventbridge.part_sections_generated_rule_name
+  rule = module.eventbridge.part_sections_generated_rule_name
   # event_bus_name omitted - using default bus
-  target_id      = "CourseSectionsHandler"
-  arn            = module.course_sections_handler_lambda.function_arn
+  target_id = "CourseSectionsHandler"
+  arn       = module.course_sections_handler_lambda.function_arn
 
   depends_on = [
     module.course_sections_handler_lambda,
@@ -1505,10 +2030,10 @@ resource "aws_cloudwatch_event_target" "part_sections_generated" {
 
 # AllPartsComplete → Outline Reviewer Handler
 resource "aws_cloudwatch_event_target" "all_parts_complete" {
-  rule           = module.eventbridge.all_parts_complete_rule_name
+  rule = module.eventbridge.all_parts_complete_rule_name
   # event_bus_name omitted - using default bus
-  target_id      = "CourseOutlineReviewer"
-  arn            = module.course_outline_reviewer_lambda.function_arn
+  target_id = "CourseOutlineReviewer"
+  arn       = module.course_outline_reviewer_lambda.function_arn
 
   depends_on = [
     module.course_outline_reviewer_lambda,
@@ -1518,10 +2043,10 @@ resource "aws_cloudwatch_event_target" "all_parts_complete" {
 
 # OutlineReview → Storage Handler
 resource "aws_cloudwatch_event_target" "outline_reviewed" {
-  rule           = module.eventbridge.outline_reviewed_rule_name
+  rule = module.eventbridge.outline_reviewed_rule_name
   # event_bus_name omitted - using default bus
-  target_id      = "CourseStorageHandler"
-  arn            = module.course_storage_handler_lambda.function_arn
+  target_id = "CourseStorageHandler"
+  arn       = module.course_storage_handler_lambda.function_arn
 
   depends_on = [
     module.course_storage_handler_lambda,
@@ -1531,10 +2056,10 @@ resource "aws_cloudwatch_event_target" "outline_reviewed" {
 
 # DocumentProcessed → Source Summary Generator
 resource "aws_cloudwatch_event_target" "document_processed" {
-  rule           = module.eventbridge.document_processed_rule_name
+  rule = module.eventbridge.document_processed_rule_name
   # event_bus_name omitted - using default bus
-  target_id      = "SourceSummaryGenerator"
-  arn            = module.source_summary_generator_lambda.function_arn
+  target_id = "SourceSummaryGenerator"
+  arn       = module.source_summary_generator_lambda.function_arn
 
   depends_on = [
     module.source_summary_generator_lambda,
@@ -1544,10 +2069,10 @@ resource "aws_cloudwatch_event_target" "document_processed" {
 
 # SourceSummaryStored → Embedding Generator
 resource "aws_cloudwatch_event_target" "source_summary_stored" {
-  rule           = module.eventbridge.source_summary_stored_rule_name
+  rule = module.eventbridge.source_summary_stored_rule_name
   # event_bus_name omitted - using default bus
-  target_id      = "SourceSummaryEmbeddingGenerator"
-  arn            = module.source_summary_embedding_generator_lambda.function_arn
+  target_id = "SourceSummaryEmbeddingGenerator"
+  arn       = module.source_summary_embedding_generator_lambda.function_arn
 
   depends_on = [
     module.source_summary_embedding_generator_lambda,
@@ -1585,7 +2110,7 @@ resource "aws_lambda_permission" "eventbridge_invoke_embedding" {
   function_name = module.course_embedding_handler_lambda.function_name
   principal     = "events.amazonaws.com"
   # Use rule ARN for default bus (rule ARN format: arn:aws:events:region:account-id:rule/rule-name)
-  source_arn    = "arn:aws:events:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:rule/${module.eventbridge.embedding_generated_rule_name}"
+  source_arn = "arn:aws:events:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:rule/${module.eventbridge.embedding_generated_rule_name}"
 }
 
 resource "aws_lambda_permission" "eventbridge_invoke_book_search" {
@@ -1594,7 +2119,7 @@ resource "aws_lambda_permission" "eventbridge_invoke_book_search" {
   function_name = module.course_book_search_handler_lambda.function_name
   principal     = "events.amazonaws.com"
   # Use rule ARN for default bus
-  source_arn    = "arn:aws:events:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:rule/${module.eventbridge.book_summaries_found_rule_name}"
+  source_arn = "arn:aws:events:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:rule/${module.eventbridge.book_summaries_found_rule_name}"
 }
 
 resource "aws_lambda_permission" "eventbridge_invoke_parts" {
@@ -1603,7 +2128,7 @@ resource "aws_lambda_permission" "eventbridge_invoke_parts" {
   function_name = module.course_parts_handler_lambda.function_name
   principal     = "events.amazonaws.com"
   # Use rule ARN for default bus
-  source_arn    = "arn:aws:events:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:rule/${module.eventbridge.parts_generated_rule_name}"
+  source_arn = "arn:aws:events:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:rule/${module.eventbridge.parts_generated_rule_name}"
 }
 
 resource "aws_lambda_permission" "eventbridge_invoke_sections" {
@@ -1612,7 +2137,7 @@ resource "aws_lambda_permission" "eventbridge_invoke_sections" {
   function_name = module.course_sections_handler_lambda.function_name
   principal     = "events.amazonaws.com"
   # Use rule ARN for default bus
-  source_arn    = "arn:aws:events:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:rule/${module.eventbridge.part_sections_generated_rule_name}"
+  source_arn = "arn:aws:events:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:rule/${module.eventbridge.part_sections_generated_rule_name}"
 }
 
 resource "aws_lambda_permission" "eventbridge_invoke_outline_reviewer" {
@@ -1621,7 +2146,7 @@ resource "aws_lambda_permission" "eventbridge_invoke_outline_reviewer" {
   function_name = module.course_outline_reviewer_lambda.function_name
   principal     = "events.amazonaws.com"
   # Use rule ARN for default bus
-  source_arn    = "arn:aws:events:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:rule/${module.eventbridge.all_parts_complete_rule_name}"
+  source_arn = "arn:aws:events:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:rule/${module.eventbridge.all_parts_complete_rule_name}"
 }
 
 resource "aws_lambda_permission" "eventbridge_invoke_storage" {
@@ -1630,7 +2155,7 @@ resource "aws_lambda_permission" "eventbridge_invoke_storage" {
   function_name = module.course_storage_handler_lambda.function_name
   principal     = "events.amazonaws.com"
   # Use rule ARN for default bus
-  source_arn    = "arn:aws:events:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:rule/${module.eventbridge.outline_reviewed_rule_name}"
+  source_arn = "arn:aws:events:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:rule/${module.eventbridge.outline_reviewed_rule_name}"
 }
 
 resource "aws_lambda_permission" "eventbridge_invoke_source_summary_generator" {

@@ -1,0 +1,3 @@
+# Dependencies for book cover handler
+# Note: boto3 and psycopg2-binary are provided by the Lambda layer
+# This file is kept for consistency but may be empty if all deps are in the layer

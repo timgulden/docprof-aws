@@ -72,6 +72,24 @@ resource "aws_s3_bucket_public_access_block" "source_docs" {
   restrict_public_buckets  = true
 }
 
+# CORS configuration for source docs bucket
+# Allows direct uploads from frontend using pre-signed POST URLs
+resource "aws_s3_bucket_cors_configuration" "source_docs" {
+  bucket = aws_s3_bucket.source_docs.id
+
+  cors_rule {
+    allowed_headers = ["*"]
+    allowed_methods = ["POST", "PUT"]
+    allowed_origins = [
+      "http://localhost:5173",  # Vite dev server
+      "http://localhost:3000",  # Alternative dev port
+      "https://*.cloudfront.net",  # Production CloudFront distribution
+    ]
+    expose_headers  = ["ETag"]
+    max_age_seconds = 3000
+  }
+}
+
 # S3 Bucket for Processed Chunks
 resource "aws_s3_bucket" "processed_chunks" {
   bucket = "${var.project_name}-${var.environment}-processed-chunks"

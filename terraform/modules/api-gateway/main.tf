@@ -31,6 +31,10 @@ resource "aws_api_gateway_deployment" "this" {
     aws_api_gateway_integration.this,
     aws_api_gateway_method_response.this,
     aws_api_gateway_integration_response.this,
+    aws_api_gateway_method.options,
+    aws_api_gateway_integration.options,
+    aws_api_gateway_method_response.options,
+    aws_api_gateway_integration_response.options,
   ]
 
   lifecycle {
@@ -130,7 +134,7 @@ resource "aws_iam_role_policy_attachment" "api_gateway_cloudwatch" {
 }
 
 # CORS Configuration
-resource "aws_api_gateway_gateway_response" "cors" {
+resource "aws_api_gateway_gateway_response" "cors_4xx" {
   rest_api_id   = aws_api_gateway_rest_api.this.id
   response_type = "DEFAULT_4XX"
 
@@ -141,7 +145,58 @@ resource "aws_api_gateway_gateway_response" "cors" {
   }
 
   response_parameters = {
-    "gatewayresponse.header.Access-Control-Allow-Origin"  = "'${join(",", var.cors_origins)}'"
+    "gatewayresponse.header.Access-Control-Allow-Origin"  = length(var.cors_origins) > 0 && var.cors_origins[0] == "*" ? "'*'" : "'${var.cors_origins[0]}'"
+    "gatewayresponse.header.Access-Control-Allow-Headers" = "'${join(",", var.cors_headers)}'"
+    "gatewayresponse.header.Access-Control-Allow-Methods" = "'${join(",", var.cors_methods)}'"
+  }
+}
+
+resource "aws_api_gateway_gateway_response" "cors_5xx" {
+  rest_api_id   = aws_api_gateway_rest_api.this.id
+  response_type = "DEFAULT_5XX"
+
+  response_templates = {
+    "application/json" = jsonencode({
+      message = "$context.error.messageString"
+    })
+  }
+
+  response_parameters = {
+    "gatewayresponse.header.Access-Control-Allow-Origin"  = length(var.cors_origins) > 0 && var.cors_origins[0] == "*" ? "'*'" : "'${var.cors_origins[0]}'"
+    "gatewayresponse.header.Access-Control-Allow-Headers" = "'${join(",", var.cors_headers)}'"
+    "gatewayresponse.header.Access-Control-Allow-Methods" = "'${join(",", var.cors_methods)}'"
+  }
+}
+
+resource "aws_api_gateway_gateway_response" "cors_401" {
+  rest_api_id   = aws_api_gateway_rest_api.this.id
+  response_type = "UNAUTHORIZED"
+
+  response_templates = {
+    "application/json" = jsonencode({
+      message = "$context.error.messageString"
+    })
+  }
+
+  response_parameters = {
+    "gatewayresponse.header.Access-Control-Allow-Origin"  = length(var.cors_origins) > 0 && var.cors_origins[0] == "*" ? "'*'" : "'${var.cors_origins[0]}'"
+    "gatewayresponse.header.Access-Control-Allow-Headers" = "'${join(",", var.cors_headers)}'"
+    "gatewayresponse.header.Access-Control-Allow-Methods" = "'${join(",", var.cors_methods)}'"
+  }
+}
+
+resource "aws_api_gateway_gateway_response" "cors_403" {
+  rest_api_id   = aws_api_gateway_rest_api.this.id
+  response_type = "ACCESS_DENIED"
+
+  response_templates = {
+    "application/json" = jsonencode({
+      message = "$context.error.messageString"
+    })
+  }
+
+  response_parameters = {
+    "gatewayresponse.header.Access-Control-Allow-Origin"  = length(var.cors_origins) > 0 && var.cors_origins[0] == "*" ? "'*'" : "'${var.cors_origins[0]}'"
     "gatewayresponse.header.Access-Control-Allow-Headers" = "'${join(",", var.cors_headers)}'"
     "gatewayresponse.header.Access-Control-Allow-Methods" = "'${join(",", var.cors_methods)}'"
   }
@@ -183,13 +238,147 @@ resource "aws_api_gateway_resource" "parent" {
 }
 
 # Create final resource for each endpoint
-resource "aws_api_gateway_resource" "this" {
-  for_each = var.endpoints
+# Special handling: if path is single segment and matches a parent, use that parent directly
+locals {
+  # Endpoints that should use existing parent resources (single segment matching a parent)
+  endpoints_using_parent = {
+    for k, v in var.endpoints :
+    k => contains(local.parent_segments, local.endpoint_paths[k][0])
+    if length(local.endpoint_paths[k]) == 1
+  }
+  
+  # Endpoints that need new resources created
+  endpoints_needing_resources = {
+    for k, v in var.endpoints :
+    k => v
+    if length(local.endpoint_paths[k]) > 1 || !contains(local.parent_segments, local.endpoint_paths[k][0])
+  }
+}
+
+# Create intermediate resources for paths with 3+ segments (e.g., "books/{bookId}/cover")
+# This creates resources for all intermediate path segments
+locals {
+  # Find all intermediate path segments that need to be created
+  # For "books/{bookId}/cover" -> need to create "{bookId}" under "books"
+  # Use path string (not resource ID) for deduplication to avoid dependency issues
+  intermediate_resources_raw = {
+    for k, v in local.endpoints_needing_resources :
+    "${k}-intermediate" => {
+      endpoint_key = k
+      parent_segment = local.endpoint_paths[k][0]  # e.g., "books"
+      path_part    = local.endpoint_paths[k][1]    # e.g., "{bookId}"
+      key          = "${local.endpoint_paths[k][0]}:${local.endpoint_paths[k][1]}"  # Use string, not resource ID
+    }
+    if length(local.endpoint_paths[k]) > 2  # Only for paths with 3+ segments
+  }
+  
+  # Deduplicate intermediate resources by parent_segment:path_part (using strings, not IDs)
+  # If multiple endpoints need the same intermediate resource, we only create it once
+  intermediate_resources = {
+    for key in toset([for k, v in local.intermediate_resources_raw : v.key]) :
+    key => [for k, v in local.intermediate_resources_raw : v if v.key == key][0]
+  }
+}
+
+# Create intermediate resources (e.g., "{bookId}" in "books/{bookId}/cover")
+resource "aws_api_gateway_resource" "intermediate" {
+  for_each = local.intermediate_resources
 
   rest_api_id = aws_api_gateway_rest_api.this.id
-  # If path has multiple parts, use parent resource; otherwise use root
-  parent_id = length(local.endpoint_paths[each.key]) > 1 ? aws_api_gateway_resource.parent[local.endpoint_paths[each.key][0]].id : aws_api_gateway_rest_api.this.root_resource_id
+  parent_id   = aws_api_gateway_resource.parent[each.value.parent_segment].id
+  path_part   = each.value.path_part
+}
+
+# Map endpoint keys to their intermediate resource IDs (for paths with 3+ segments)
+locals {
+  endpoint_to_intermediate = {
+    for k, v in local.intermediate_resources_raw :
+    v.endpoint_key => aws_api_gateway_resource.intermediate[v.key].id
+  }
+  
+  # Map intermediate resources by their path_part and parent (to detect duplicates)
+  # This allows endpoints with 2 segments to reuse intermediate resources created for 3+ segment paths
+  # Use string key (parent_segment:path_part) instead of resource ID
+  intermediate_by_path = {
+    for k, v in local.intermediate_resources :
+    k => aws_api_gateway_resource.intermediate[k].id
+  }
+  
+  # Also create a lookup by parent resource ID for endpoints that need to check
+  intermediate_by_parent_id = {
+    for k, v in local.intermediate_resources :
+    "${aws_api_gateway_resource.parent[v.parent_segment].id}:${v.path_part}" => aws_api_gateway_resource.intermediate[k].id
+  }
+  
+  # Compute parent_id for each endpoint
+  endpoint_parent_ids = {
+    for k in keys(local.endpoints_needing_resources) :
+    k => length(local.endpoint_paths[k]) > 2 
+      ? (contains(keys(local.endpoint_to_intermediate), k) ? local.endpoint_to_intermediate[k] : aws_api_gateway_resource.parent[local.endpoint_paths[k][0]].id)
+      : (length(local.endpoint_paths[k]) > 1 
+        ? (
+          # Check if an intermediate resource already exists for this path segment
+          # For "books/{bookId}", check if "{bookId}" intermediate resource exists under "books"
+          # Use string-based lookup first, then fall back to parent resource ID lookup
+          length(local.endpoint_paths[k]) >= 2 && contains(keys(local.intermediate_by_path), "${local.endpoint_paths[k][0]}:${local.endpoint_paths[k][1]}")
+          ? local.intermediate_by_parent_id["${aws_api_gateway_resource.parent[local.endpoint_paths[k][0]].id}:${local.endpoint_paths[k][1]}"]
+          : aws_api_gateway_resource.parent[local.endpoint_paths[k][0]].id
+        )
+        : aws_api_gateway_rest_api.this.root_resource_id)
+  }
+}
+
+# Only create resources for endpoints that don't already have an intermediate resource
+# Endpoints with 2 segments that match an existing intermediate resource will use that resource directly
+# Use string-based check (parent_segment:path_part) instead of resource ID to avoid dependency issues
+locals {
+  intermediate_path_keys = toset([for k, v in local.intermediate_resources : k])
+  
+  endpoints_needing_new_resources = {
+    for k, v in local.endpoints_needing_resources :
+    k => v
+    if length(local.endpoint_paths[k]) != 2 || !(length(local.endpoint_paths[k]) >= 2 && try(contains(local.intermediate_path_keys, "${local.endpoint_paths[k][0]}:${local.endpoint_paths[k][1]}"), false))
+  }
+}
+
+resource "aws_api_gateway_resource" "this" {
+  for_each = local.endpoints_needing_new_resources
+
+  rest_api_id = aws_api_gateway_rest_api.this.id
+  parent_id   = local.endpoint_parent_ids[each.key]
   path_part   = local.endpoint_paths[each.key][length(local.endpoint_paths[each.key]) - 1]
+}
+
+# Local value to get resource ID (either new resource, intermediate resource, or existing parent)
+locals {
+  endpoint_resource_ids = merge(
+    {
+      for k, v in aws_api_gateway_resource.this : k => v.id
+    },
+    {
+      # Endpoints that reuse existing intermediate resources (2-segment paths that match 3+ segment intermediate)
+      for k in keys(local.endpoints_needing_resources) :
+      k => local.endpoint_parent_ids[k]
+      if length(local.endpoint_paths[k]) == 2 && try(contains(local.intermediate_path_keys, "${local.endpoint_paths[k][0]}:${local.endpoint_paths[k][1]}"), false)
+    },
+    {
+      for k in keys(local.endpoints_using_parent) :
+      k => aws_api_gateway_resource.parent[local.endpoint_paths[k][0]].id
+      if contains(local.parent_segments, local.endpoint_paths[k][0])
+    }
+  )
+}
+
+# Cognito Authorizer (if Cognito is configured)
+# Use for_each with a conditional map to avoid count issues
+resource "aws_api_gateway_authorizer" "cognito" {
+  for_each = var.cognito_user_pool_arn != null ? { enabled = true } : {}
+
+  name                   = "${var.project_name}-${var.environment}-cognito-authorizer"
+  rest_api_id            = aws_api_gateway_rest_api.this.id
+  type                   = "COGNITO_USER_POOLS"
+  provider_arns          = [var.cognito_user_pool_arn]
+  authorizer_credentials = null
 }
 
 # API Gateway Method
@@ -197,9 +386,11 @@ resource "aws_api_gateway_method" "this" {
   for_each = var.endpoints
 
   rest_api_id   = aws_api_gateway_rest_api.this.id
-  resource_id   = aws_api_gateway_resource.this[each.key].id
+  resource_id   = local.endpoint_resource_ids[each.key]
   http_method   = each.value.method
-  authorization = "NONE"  # Can be updated to use Cognito later
+  authorization = each.value.require_auth && var.cognito_user_pool_arn != null ? "COGNITO_USER_POOLS" : "NONE"
+  authorizer_id = each.value.require_auth && var.cognito_user_pool_arn != null ? aws_api_gateway_authorizer.cognito["enabled"].id : null
+  api_key_required = false  # Explicitly disable API key requirement
 
   request_parameters = {
     "method.request.header.Content-Type" = false
@@ -211,14 +402,16 @@ resource "aws_api_gateway_integration" "this" {
   for_each = var.endpoints
 
   rest_api_id = aws_api_gateway_rest_api.this.id
-  resource_id = aws_api_gateway_resource.this[each.key].id
+  resource_id = local.endpoint_resource_ids[each.key]
   http_method = aws_api_gateway_method.this[each.key].http_method
 
   integration_http_method = "POST"
   type                    = "AWS_PROXY"
   uri                     = each.value.lambda_invoke_arn
 
-  content_handling = contains(var.binary_media_types, "application/pdf") ? "CONVERT_TO_BINARY" : null
+  # For AWS_PROXY integration, content_handling is not used - API Gateway handles base64 decoding automatically
+  # based on isBase64Encoded flag and binary_media_types configuration
+  content_handling = null
 }
 
 # Lambda Permission for API Gateway
@@ -237,7 +430,7 @@ resource "aws_api_gateway_method_response" "this" {
   for_each = var.endpoints
 
   rest_api_id = aws_api_gateway_rest_api.this.id
-  resource_id = aws_api_gateway_resource.this[each.key].id
+  resource_id = local.endpoint_resource_ids[each.key]
   http_method = aws_api_gateway_method.this[each.key].http_method
   status_code = "200"
 
@@ -245,11 +438,14 @@ resource "aws_api_gateway_method_response" "this" {
     "method.response.header.Access-Control-Allow-Origin"  = true
     "method.response.header.Access-Control-Allow-Headers" = true
     "method.response.header.Access-Control-Allow-Methods" = true
+    "method.response.header.Access-Control-Allow-Credentials" = true
+    "method.response.header.Content-Type" = true  # Allow Content-Type to be passed through
   }
 
-  response_models = {
-    "application/json" = "Empty"
-  }
+  # With AWS_PROXY, response_models are ignored - Lambda response is passed through directly
+  # But we still need to define it for API Gateway validation
+  # Empty model allows any content type (Lambda sets the actual Content-Type)
+  response_models = {}
 }
 
 # Integration Response
@@ -257,14 +453,17 @@ resource "aws_api_gateway_integration_response" "this" {
   for_each = var.endpoints
 
   rest_api_id = aws_api_gateway_rest_api.this.id
-  resource_id = aws_api_gateway_resource.this[each.key].id
+  resource_id = local.endpoint_resource_ids[each.key]
   http_method = aws_api_gateway_method.this[each.key].http_method
   status_code = aws_api_gateway_method_response.this[each.key].status_code
 
   response_parameters = {
-    "method.response.header.Access-Control-Allow-Origin"  = "'${join(",", var.cors_origins)}'"
+    "method.response.header.Access-Control-Allow-Origin"  = length(var.cors_origins) > 0 && var.cors_origins[0] == "*" ? "'*'" : "'${var.cors_origins[0]}'"
     "method.response.header.Access-Control-Allow-Headers" = "'${join(",", var.cors_headers)}'"
     "method.response.header.Access-Control-Allow-Methods" = "'${join(",", var.cors_methods)}'"
+    "method.response.header.Access-Control-Allow-Credentials" = "'true'"
+    # Pass through Content-Type from Lambda response (AWS_PROXY passes through headers directly)
+    "method.response.header.Content-Type" = "integration.response.header.Content-Type"
   }
 
   depends_on = [aws_api_gateway_integration.this]
@@ -275,7 +474,7 @@ resource "aws_api_gateway_method" "options" {
   for_each = var.endpoints
 
   rest_api_id   = aws_api_gateway_rest_api.this.id
-  resource_id   = aws_api_gateway_resource.this[each.key].id
+  resource_id   = local.endpoint_resource_ids[each.key]
   http_method   = "OPTIONS"
   authorization = "NONE"
 }
@@ -284,7 +483,7 @@ resource "aws_api_gateway_integration" "options" {
   for_each = var.endpoints
 
   rest_api_id = aws_api_gateway_rest_api.this.id
-  resource_id = aws_api_gateway_resource.this[each.key].id
+  resource_id = local.endpoint_resource_ids[each.key]
   http_method = aws_api_gateway_method.options[each.key].http_method
 
   type = "MOCK"
@@ -298,7 +497,7 @@ resource "aws_api_gateway_method_response" "options" {
   for_each = var.endpoints
 
   rest_api_id = aws_api_gateway_rest_api.this.id
-  resource_id = aws_api_gateway_resource.this[each.key].id
+  resource_id = local.endpoint_resource_ids[each.key]
   http_method = aws_api_gateway_method.options[each.key].http_method
   status_code = "200"
 
@@ -306,6 +505,7 @@ resource "aws_api_gateway_method_response" "options" {
     "method.response.header.Access-Control-Allow-Origin"  = true
     "method.response.header.Access-Control-Allow-Headers" = true
     "method.response.header.Access-Control-Allow-Methods"  = true
+    "method.response.header.Access-Control-Allow-Credentials" = true
   }
 }
 
@@ -313,14 +513,17 @@ resource "aws_api_gateway_integration_response" "options" {
   for_each = var.endpoints
 
   rest_api_id = aws_api_gateway_rest_api.this.id
-  resource_id = aws_api_gateway_resource.this[each.key].id
+  resource_id = local.endpoint_resource_ids[each.key]
   http_method = aws_api_gateway_method.options[each.key].http_method
   status_code = "200"
 
+  # Use the first origin (or * if present) - API Gateway doesn't support multiple origins dynamically
+  # For production, consider using a Lambda integration to return the request origin dynamically
   response_parameters = {
-    "method.response.header.Access-Control-Allow-Origin"  = "'${join(",", var.cors_origins)}'"
+    "method.response.header.Access-Control-Allow-Origin"  = length(var.cors_origins) > 0 && var.cors_origins[0] == "*" ? "'*'" : "'${var.cors_origins[0]}'"
     "method.response.header.Access-Control-Allow-Headers" = "'${join(",", var.cors_headers)}'"
     "method.response.header.Access-Control-Allow-Methods"  = "'${join(",", var.cors_methods)}'"
+    "method.response.header.Access-Control-Allow-Credentials" = "'true'"
   }
 
   depends_on = [aws_api_gateway_integration.options]

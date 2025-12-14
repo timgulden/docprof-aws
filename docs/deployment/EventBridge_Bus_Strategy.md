@@ -181,3 +181,4 @@ If we start with default bus and want to migrate to custom bus later:
 4. ✅ Test end-to-end course generation flow
 5. ✅ Document the decision and rationale
 
+

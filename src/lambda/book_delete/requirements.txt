@@ -1,0 +1,8 @@
+# Book Delete Lambda Dependencies
+
+# Database
+psycopg2-binary>=2.9.9  # PostgreSQL adapter
+
+# AWS SDK (included in Lambda runtime, but listed for clarity)
+boto3>=1.34.0
+
