@@ -1,0 +1,2 @@
+# Minimal dependencies - session management uses shared utilities
+# which are included via Lambda layers

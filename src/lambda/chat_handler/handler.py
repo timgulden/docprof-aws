@@ -32,6 +32,7 @@ from shared.session_manager import get_session, create_session, update_session
 from shared.bedrock_client import invoke_claude, generate_embeddings
 from shared.db_utils import vector_similarity_search, get_db_connection
 from shared.response import success_response, error_response
+from shared.book_filter import get_selected_book_ids, update_selected_book_ids
 from shared.model_adapters import (
     dict_to_chat_state,
     chat_state_to_dict,
@@ -72,7 +73,7 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         message = body.get('message')
         session_id = body.get('session_id')
         with_audio = body.get('with_audio', False)
-        book_ids = body.get('book_ids')  # Optional filter by book IDs
+        request_book_ids = body.get('book_ids')  # Optional filter by book IDs from request
         
         if not message:
             return error_response("Missing required field: message", 400)
@@ -85,6 +86,15 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         else:
             session = create_session()
             session_id = session['session_id']
+        
+        # Handle book_ids: update session if provided in request, otherwise use session's stored selection
+        if request_book_ids is not None:
+            # Request explicitly provides book_ids - update session to persist this selection
+            session = update_selected_book_ids(session, request_book_ids)
+            update_session(session)  # Persist to DynamoDB
+        
+        # Get selected book_ids (from request if provided, otherwise from session)
+        search_book_ids = get_selected_book_ids(session, request_book_ids)
         
         # Convert session dict to MAExpert ChatState (preserves all tuned logic)
         chat_state = dict_to_chat_state(session)
@@ -100,29 +110,63 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         )
         
         # Step 2: Generate embedding for search
+        # IMPORTANT: Use same embedding service as ingestion (Bedrock Titan, normalized)
+        # This ensures query embeddings are compatible with stored chunk embeddings
         logger.info(f"Generating embedding for query: {expanded_query[:100]}...")
-        embeddings = generate_embeddings([expanded_query])
+        logger.info("Using Bedrock Titan (amazon.titan-embed-text-v1) with normalization=True (same as ingestion)")
+        embeddings = generate_embeddings([expanded_query], normalize=True)  # Explicitly normalize to match ingestion
         query_embedding = embeddings[0]
+        logger.info(f"Query embedding generated: {len(query_embedding)} dimensions, normalized={True}")
         
         # Step 3: Vector search
         logger.info("Performing vector search...")
         chunk_types = ["2page"]  # Use 2-page chunks for better citation accuracy
-        # Note: vector_similarity_search only supports single book_id filter
-        # For multiple books, we'd need to search each separately and combine
-        book_id_filter = book_ids[0] if book_ids and len(book_ids) > 0 else None
-        if book_ids and len(book_ids) > 1:
-            logger.info(f"Multiple book_ids provided ({len(book_ids)}), using first: {book_id_filter}")
         
-        search_results = vector_similarity_search(
-            query_embedding=query_embedding,
-            chunk_types=chunk_types,
-            book_id=book_id_filter,
-            limit=12,
-            similarity_threshold=0.7
-        )
+        # Use selected book_ids (from session or request) to filter search
+        # This matches MAExpert behavior: metadata_filters["book_id"] = book_ids
+        # which gets normalized to book_ids and used with book_id = ANY(%s::uuid[])
+        if search_book_ids:
+            logger.info(f"Searching across {len(search_book_ids)} selected book(s): {search_book_ids[:3]}{'...' if len(search_book_ids) > 3 else ''}")
+        else:
+            logger.info("No book_ids selected, searching across all books")
+        
+        # Vector search strategy:
+        # 1. Try with threshold to get high-quality results first
+        # 2. If we don't get at least 10 results, lower threshold or remove it
+        # 3. Always return top 10 hits (or as many as available)
+        # 
+        # Note: MAExpert used OpenAI embeddings (different model), so thresholds may differ.
+        # For Titan embeddings, we'll be more permissive and ensure we get results.
+        search_results = None
+        target_limit = 10  # User wants at least top 10 hits
+        
+        # Start with moderate threshold, progressively lower if needed
+        thresholds = [0.6, 0.5, 0.4, 0.3, 0.2, 0.0]  # 0.0 = no threshold, just top K
+        
+        for threshold in thresholds:
+            logger.info(f"Trying vector search with threshold={threshold}, limit={target_limit}")
+            search_results = vector_similarity_search(
+                query_embedding=query_embedding,
+                chunk_types=chunk_types,
+                book_ids=search_book_ids,  # Pass all selected book_ids (or None for all books)
+                limit=target_limit,
+                similarity_threshold=threshold if threshold > 0 else None  # None = no threshold filter
+            )
+            
+            if search_results and len(search_results) >= target_limit:
+                logger.info(f"Found {len(search_results)} results with threshold={threshold}")
+                break
+            elif search_results:
+                logger.info(f"Found {len(search_results)} results with threshold={threshold} (less than target {target_limit})")
+                # Continue to try lower thresholds to get more results
+                if len(search_results) >= 5:  # If we have at least 5, might be good enough
+                    break
         
         if not search_results:
-            logger.warning("No chunks found for query")
+            logger.warning(f"No chunks found for query after trying all thresholds")
+            logger.warning(f"Query: {expanded_query[:200]}")
+            logger.warning(f"Query embedding dimensions: {len(query_embedding)}")
+            logger.warning(f"Chunk types: {chunk_types}, Book IDs filter: {search_book_ids or 'all books'}")
             assistant_message = {
                 'id': str(uuid4()),
                 'role': 'assistant',

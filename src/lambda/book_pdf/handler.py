@@ -96,3 +96,4 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     except Exception as e:
         logger.error(f"Error retrieving PDF URL: {e}", exc_info=True)
         return error_response("Failed to retrieve PDF URL", 500)
+

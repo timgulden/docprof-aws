@@ -20,6 +20,7 @@ interface CreateSessionRequest {
 interface UpdateSessionRequest {
   sessionName?: string;
   sessionContext?: string;
+  selectedBookIds?: string[];
 }
 
 export const listSessions = async (): Promise<SessionMetadata[]> => {
@@ -80,6 +81,7 @@ export const updateSession = async (
   const response = await apiClient.patch<RawSessionMetadata>(`/chat/sessions/${sessionId}`, {
     session_name: request.sessionName,
     session_context: request.sessionContext,
+    selected_book_ids: request.selectedBookIds,
   });
   return normalizeSessionMetadata(response.data);
 };

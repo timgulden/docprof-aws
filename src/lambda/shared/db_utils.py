@@ -95,8 +95,9 @@ def vector_similarity_search(
     query_embedding: List[float],
     chunk_types: Optional[List[str]] = None,
     book_id: Optional[str] = None,
+    book_ids: Optional[List[str]] = None,
     limit: int = 10,
-    similarity_threshold: float = 0.7
+    similarity_threshold: Optional[float] = 0.7
 ) -> List[Dict[str, Any]]:
     """
     Perform vector similarity search using pgvector.
@@ -104,9 +105,10 @@ def vector_similarity_search(
     Args:
         query_embedding: Query vector (1536 dimensions)
         chunk_types: Filter by chunk types (None = all types)
-        book_id: Filter by book_id (None = all books)
+        book_id: Filter by single book_id (deprecated, use book_ids instead)
+        book_ids: Filter by multiple book_ids (None = all books)
         limit: Maximum number of results
-        similarity_threshold: Minimum similarity score (0-1)
+        similarity_threshold: Minimum similarity score (0-1). If None, returns top K without threshold filter.
     
     Returns:
         List of chunks with similarity scores
@@ -121,32 +123,83 @@ def vector_similarity_search(
                 conditions.append("chunk_type = ANY(%s)")
                 params.append(chunk_types)
             
-            if book_id:
+            # Support multiple book_ids (preferred) or single book_id (for backward compatibility)
+            if book_ids and len(book_ids) > 0:
+                # Filter by multiple books using ANY array match (same as MAExpert)
+                conditions.append("book_id = ANY(%s::uuid[])")
+                params.append(book_ids)
+            elif book_id:
+                # Backward compatibility: single book_id
                 conditions.append("book_id = %s")
                 params.append(book_id)
             
+            # Always require embedding to exist
+            conditions.append("embedding IS NOT NULL")
+            
             where_clause = " AND ".join(conditions) if conditions else "1=1"
             
-            # Add similarity threshold
-            params.extend([query_embedding, similarity_threshold, query_embedding, limit])
-            
-            query = f"""
-                SELECT 
-                    chunk_id, book_id, chunk_type, content,
-                    chapter_number, chapter_title,
-                    page_start, page_end,
-                    figure_id, figure_caption, figure_type, figure_context,
-                    1 - (embedding <=> %s::vector) as similarity
-                FROM chunks
-                WHERE {where_clause}
-                    AND embedding IS NOT NULL
-                    AND 1 - (embedding <=> %s::vector) >= %s
-                ORDER BY embedding <=> %s::vector
-                LIMIT %s
-            """
+            # Build query with or without threshold
+            if similarity_threshold is not None:
+                # With threshold filter
+                params.extend([query_embedding, similarity_threshold, query_embedding, limit])
+                query = f"""
+                    SELECT 
+                        chunk_id, book_id, chunk_type, content,
+                        chapter_number, chapter_title,
+                        page_start, page_end,
+                        figure_id, figure_caption, figure_type, figure_context,
+                        1 - (embedding <=> %s::vector) as similarity
+                    FROM chunks
+                    WHERE {where_clause}
+                        AND 1 - (embedding <=> %s::vector) >= %s
+                    ORDER BY embedding <=> %s::vector
+                    LIMIT %s
+                """
+            else:
+                # No threshold - just return top K by similarity
+                params.extend([query_embedding, limit])
+                query = f"""
+                    SELECT 
+                        chunk_id, book_id, chunk_type, content,
+                        chapter_number, chapter_title,
+                        page_start, page_end,
+                        figure_id, figure_caption, figure_type, figure_context,
+                        1 - (embedding <=> %s::vector) as similarity
+                    FROM chunks
+                    WHERE {where_clause}
+                    ORDER BY embedding <=> %s::vector
+                    LIMIT %s
+                """
             
             cur.execute(query, params)
-            return [dict(row) for row in cur.fetchall()]
+            results = [dict(row) for row in cur.fetchall()]
+            
+            # Log similarity scores for debugging (even if empty)
+            if results:
+                scores = [r.get('similarity', 0) for r in results]
+                logger.info(f"Vector search returned {len(results)} results, similarity scores: min={min(scores):.4f}, max={max(scores):.4f}, avg={sum(scores)/len(scores):.4f}")
+            else:
+                # Even with no results, try to get top similarity score for debugging
+                try:
+                    debug_query = f"""
+                        SELECT 1 - (embedding <=> %s::vector) as similarity
+                        FROM chunks
+                        WHERE {where_clause}
+                        ORDER BY embedding <=> %s::vector
+                        LIMIT 1
+                    """
+                    debug_params = [query_embedding, query_embedding]
+                    cur.execute(debug_query, debug_params)
+                    debug_result = cur.fetchone()
+                    if debug_result:
+                        top_similarity = debug_result[0]
+                        logger.warning(f"No results found, but top similarity score (without threshold) would be: {top_similarity:.4f}")
+                    else:
+                        logger.warning(f"No chunks exist matching filters (chunk_types={chunk_types}, book_id={book_id})")
+                except Exception as e:
+                    logger.debug(f"Could not get debug similarity score: {e}")
+            
+            return results
 
 
 def insert_chunks_batch(

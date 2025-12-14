@@ -1,5 +1,6 @@
 """
 Lambda function to check database content and identify LLM-generated fields.
+Updated to check for embeddings in chunks.
 """
 
 import json
@@ -105,18 +106,66 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                     
                     results['chapters'].append(chapter_info)
                 
-                # Check chunks table
+                # Check chunks table - detailed stats including embeddings
                 cur.execute("""
                     SELECT 
                         chunk_type,
-                        COUNT(*) as count
+                        COUNT(*) as total,
+                        COUNT(embedding) as with_embedding,
+                        COUNT(*) - COUNT(embedding) as without_embedding
                     FROM chunks
                     GROUP BY chunk_type
                 """)
                 chunk_stats = cur.fetchall()
                 
-                for chunk_type, count in chunk_stats:
-                    results['chunks'][chunk_type] = count
+                results['chunks'] = {
+                    'by_type': []
+                }
+                total_chunks = 0
+                total_with_embeddings = 0
+                
+                for chunk_type, total, with_emb, without_emb in chunk_stats:
+                    results['chunks']['by_type'].append({
+                        'chunk_type': chunk_type,
+                        'total': total,
+                        'with_embedding': with_emb,
+                        'without_embedding': without_emb,
+                        'embedding_percentage': round((with_emb / total * 100) if total > 0 else 0, 2)
+                    })
+                    total_chunks += total
+                    total_with_embeddings += with_emb
+                
+                results['chunks']['summary'] = {
+                    'total_chunks': total_chunks,
+                    'chunks_with_embeddings': total_with_embeddings,
+                    'chunks_without_embeddings': total_chunks - total_with_embeddings,
+                    'embedding_percentage': round((total_with_embeddings / total_chunks * 100) if total_chunks > 0 else 0, 2)
+                }
+                
+                # Check chunks by book
+                cur.execute("""
+                    SELECT 
+                        b.title,
+                        b.book_id,
+                        COUNT(c.chunk_id) as total_chunks,
+                        COUNT(c.embedding) as with_embedding
+                    FROM chunks c
+                    LEFT JOIN books b ON c.book_id = b.book_id
+                    GROUP BY b.title, b.book_id
+                    ORDER BY b.title
+                """)
+                chunks_by_book = cur.fetchall()
+                
+                results['chunks']['by_book'] = []
+                for title, book_id, total, with_emb in chunks_by_book:
+                    results['chunks']['by_book'].append({
+                        'book_id': str(book_id) if book_id else None,
+                        'title': title or 'Unknown',
+                        'total_chunks': total,
+                        'with_embedding': with_emb,
+                        'without_embedding': total - with_emb,
+                        'embedding_percentage': round((with_emb / total * 100) if total > 0 else 0, 2)
+                    })
                 
                 # Check figures table
                 cur.execute("""
@@ -134,14 +183,24 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                     }
                 
                 # Generate recommendations
+                if results['chunks']['summary']['chunks_without_embeddings'] > 0:
+                    results['recommendations'].append(
+                        f"⚠️  CRITICAL: {results['chunks']['summary']['chunks_without_embeddings']} chunks ({100 - results['chunks']['summary']['embedding_percentage']:.1f}%) are missing embeddings. "
+                        "Vector search will not work until embeddings are generated. Re-run the book ingestion pipeline."
+                    )
+                elif results['chunks']['summary']['total_chunks'] == 0:
+                    results['recommendations'].append(
+                        "⚠️  No chunks found in database. Books may not have been ingested yet."
+                    )
+                else:
+                    results['recommendations'].append(
+                        f"✓ All {results['chunks']['summary']['total_chunks']} chunks have embeddings. Vector search should work."
+                    )
+                
                 if results['has_llm_content']:
                     results['recommendations'].append(
                         "Database contains LLM-generated content in books or chapters. "
                         "Consider purging this content before re-ingestion to regenerate with Claude Sonnet 4.5."
-                    )
-                else:
-                    results['recommendations'].append(
-                        "Database looks clean - no LLM-generated content detected. Ready for ingestion."
                     )
                 
                 return {
@@ -158,4 +217,3 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                 'message': 'Failed to check database content'
             })
         }
-

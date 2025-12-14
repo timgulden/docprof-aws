@@ -270,3 +270,4 @@ terraform apply -target=module.course_request_handler_lambda.aws_lambda_function
 
 **Status**: Blocked on Lambda packaging issue. EventBridge migration code complete and ready to deploy once Lambda is fixed.
 
+

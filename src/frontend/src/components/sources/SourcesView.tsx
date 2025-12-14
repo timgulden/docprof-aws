@@ -4,6 +4,8 @@ import { useState, useEffect, useRef } from "react";
 
 import { fetchAllBooks } from "../../api/books";
 import { useBooksStore } from "../../store/booksStore";
+import { useChatStore } from "../../store/chatStore";
+import { updateSession } from "../../api/sessions";
 import { BookCard } from "./BookCard";
 import { ProcessingBookCard } from "./ProcessingBookCard";
 import { UploadBookModal } from "./UploadBookModal";
@@ -16,7 +18,9 @@ export const SourcesView = () => {
   const selectedBookIds = useBooksStore((state) => state.selectedBookIds);
   const selectAllBooks = useBooksStore((state) => state.selectAllBooks);
   const toggleBookSelection = useBooksStore((state) => state.toggleBookSelection);
+  const currentSessionId = useChatStore((state) => state.state?.sessionId ?? null);
   const hasInitialized = useRef(false);
+  const previousBookIdsRef = useRef<string[]>([]);
 
   const { data, isLoading, error, refetch } = useQuery({
     queryKey: ["books"],
@@ -61,6 +65,33 @@ export const SourcesView = () => {
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [processingBooks.length, books.map(b => `${b.book_id}:${b.ingestion_status}`).join(',')]);
+
+  // Sync book selection changes to active session
+  // When user changes book selection in Sources tab, update the session's selected_book_ids
+  useEffect(() => {
+    // Skip if no session or not initialized yet
+    if (!currentSessionId || !hasInitialized.current) {
+      return;
+    }
+
+    // Check if selection actually changed (use sorted copies to avoid mutation)
+    const currentIds = [...selectedBookIds].sort().join(',');
+    const previousIds = [...previousBookIdsRef.current].sort().join(',');
+    
+    if (currentIds !== previousIds) {
+      // Update session with new book selection (async, don't await)
+      updateSession(currentSessionId, {
+        selectedBookIds: selectedBookIds.length > 0 ? selectedBookIds : undefined,
+      }).catch((error) => {
+        // Silently fail - book selection still works, just session won't be updated
+        console.warn("Failed to sync book selection to session:", error);
+      });
+      
+      // Update ref for next comparison
+      previousBookIdsRef.current = [...selectedBookIds];
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedBookIds.join(','), currentSessionId]);
 
   // Early returns AFTER all hooks
   if (isLoading) {

@@ -48,6 +48,22 @@ def dict_to_chat_message(msg_dict: Dict[str, Any]) -> ChatMessage:
     )
 
 
+def _clean_for_dynamodb(value: Any) -> Any:
+    """Recursively clean data structure for DynamoDB compatibility.
+    
+    DynamoDB doesn't support float types - convert to string.
+    Also handles nested dicts and lists.
+    """
+    if isinstance(value, float):
+        return str(value)  # Convert float to string
+    elif isinstance(value, dict):
+        return {k: _clean_for_dynamodb(v) for k, v in value.items()}
+    elif isinstance(value, list):
+        return [_clean_for_dynamodb(item) for item in value]
+    else:
+        return value
+
+
 def chat_message_to_dict(msg: ChatMessage) -> Dict[str, Any]:
     """Convert MAExpert ChatMessage to DynamoDB-compatible dict."""
     result = {
@@ -66,7 +82,8 @@ def chat_message_to_dict(msg: ChatMessage) -> Dict[str, Any]:
     if msg.general_spans:
         result['general_spans'] = [span.model_dump(mode='json') for span in msg.general_spans]
     
-    return result
+    # Clean for DynamoDB (convert floats to strings)
+    return _clean_for_dynamodb(result)
 
 
 def dict_to_chat_state(session_dict: Dict[str, Any]) -> ChatState:

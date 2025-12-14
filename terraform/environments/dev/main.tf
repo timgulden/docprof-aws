@@ -509,6 +509,51 @@ module "tunnel_status_lambda" {
   ]
 }
 
+# Metrics Handler Lambda (tracks chat metrics)
+module "metrics_handler_lambda" {
+  source = "../../modules/lambda"
+
+  project_name  = local.project_name
+  environment   = local.environment
+  function_name = "metrics-handler"
+
+  handler     = "handler.lambda_handler"
+  runtime     = "python3.11"
+  timeout     = 10  # Fast endpoint
+  memory_size = 128 # Minimal memory needed
+
+  source_path = "${path.module}/../../../src/lambda/metrics_handler"
+
+  # Use shared Lambda execution role
+  role_arn = module.iam.lambda_execution_role_arn
+
+  # Attach layers: Python dependencies + Shared code
+  layers = [
+    module.lambda_layer.layer_arn,
+    module.shared_code_layer.layer_arn
+  ]
+
+  # Don't bundle shared code - use layer instead
+  bundle_shared_code = false
+
+  # No environment variables needed
+  environment_variables = {}
+
+  # No VPC needed
+  vpc_config = null
+
+  tags = {
+    Component = "metrics"
+    Function  = "chat-metrics"
+  }
+
+  depends_on = [
+    module.iam,
+    module.lambda_layer,
+    module.shared_code_layer
+  ]
+}
+
 # Book Cover Lambda (returns cover images from S3 or 404)
 module "book_cover_lambda" {
   source = "../../modules/lambda"
@@ -1254,6 +1299,52 @@ module "chat_handler_lambda" {
   ]
 }
 
+# Session Handler Lambda (for session management endpoints)
+module "session_handler_lambda" {
+  source = "../../modules/lambda"
+
+  project_name  = local.project_name
+  environment   = local.environment
+  function_name = "session-handler"
+
+  handler     = "handler.lambda_handler"
+  runtime     = "python3.11"
+  timeout     = 30  # 30 seconds (quick operations)
+  memory_size = 256 # 256MB sufficient for session management
+
+  source_path = "${path.module}/../../../src/lambda/session_handler"
+
+  # Use shared Lambda execution role
+  role_arn = module.iam.lambda_execution_role_arn
+
+  # Attach layers: Python dependencies + Shared code
+  layers = [
+    module.lambda_layer.layer_arn,
+    module.shared_code_layer.layer_arn
+  ]
+
+  # Don't bundle shared code - use layer instead
+  bundle_shared_code = false
+
+  environment_variables = {
+    DYNAMODB_SESSIONS_TABLE_NAME = module.dynamodb.table_name
+    AWS_ACCOUNT_ID               = data.aws_caller_identity.current.account_id
+    # Note: AWS_REGION is automatically set by Lambda runtime
+  }
+
+  tags = {
+    Component = "chat"
+    Function  = "session-management"
+  }
+
+  depends_on = [
+    module.dynamodb,
+    module.iam,
+    module.lambda_layer,
+    module.shared_code_layer
+  ]
+}
+
 # API Gateway
 module "api_gateway" {
   source = "../../modules/api-gateway"
@@ -1261,6 +1352,8 @@ module "api_gateway" {
   project_name = local.project_name
   environment  = local.environment
   api_name     = "${local.project_name}-${local.environment}-api"
+
+  # Force replacement to clean up any orphaned methods
 
   # Cognito authorizer
   cognito_user_pool_arn = module.cognito.user_pool_arn
@@ -1339,8 +1432,43 @@ module "api_gateway" {
       method               = "POST"
       lambda_function_name = module.chat_handler_lambda.function_name
       lambda_invoke_arn    = module.chat_handler_lambda.function_invoke_arn
-      path                 = "chat"
+      path                 = "chat/message"
       require_auth         = true # Require authentication for chat
+    }
+    chat_sessions_list = {
+      method               = "GET"
+      lambda_function_name = module.session_handler_lambda.function_name
+      lambda_invoke_arn    = module.session_handler_lambda.function_invoke_arn
+      path                 = "chat/sessions"
+      require_auth         = true # Require authentication for session management
+    }
+    chat_sessions_create = {
+      method               = "POST"
+      lambda_function_name = module.session_handler_lambda.function_name
+      lambda_invoke_arn    = module.session_handler_lambda.function_invoke_arn
+      path                 = "chat/sessions"
+      require_auth         = true # Require authentication for session management
+    }
+    chat_sessions_get = {
+      method               = "GET"
+      lambda_function_name = module.session_handler_lambda.function_name
+      lambda_invoke_arn    = module.session_handler_lambda.function_invoke_arn
+      path                 = "chat/sessions/{sessionId}"
+      require_auth         = true # Require authentication for session management
+    }
+    chat_sessions_update = {
+      method               = "PATCH"
+      lambda_function_name = module.session_handler_lambda.function_name
+      lambda_invoke_arn    = module.session_handler_lambda.function_invoke_arn
+      path                 = "chat/sessions/{sessionId}"
+      require_auth         = true # Require authentication for session management
+    }
+    chat_sessions_delete = {
+      method               = "DELETE"
+      lambda_function_name = module.session_handler_lambda.function_name
+      lambda_invoke_arn    = module.session_handler_lambda.function_invoke_arn
+      path                 = "chat/sessions/{sessionId}"
+      require_auth         = true # Require authentication for session management
     }
     course_request = {
       method               = "POST"
@@ -1369,6 +1497,13 @@ module "api_gateway" {
       lambda_invoke_arn    = module.tunnel_status_lambda.function_invoke_arn
       path                 = "tunnel/status"
       require_auth         = false # Stub endpoint, no auth needed
+    }
+    metrics_chat = {
+      method               = "POST"
+      lambda_function_name = module.metrics_handler_lambda.function_name
+      lambda_invoke_arn    = module.metrics_handler_lambda.function_invoke_arn
+      path                 = "metrics/chat"
+      require_auth         = false # Metrics endpoint, no auth needed
     }
     book_cover = {
       method               = "GET"
@@ -1416,10 +1551,12 @@ module "api_gateway" {
     module.book_upload_lambda,
     module.ai_services_manager_lambda,
     module.chat_handler_lambda,
+    module.session_handler_lambda,
     module.course_request_handler_lambda,
     module.course_retriever_lambda,
     module.course_status_handler_lambda,
     module.tunnel_status_lambda,
+    module.metrics_handler_lambda,
     module.book_cover_lambda,
     module.book_pdf_lambda,
     module.book_delete_lambda,

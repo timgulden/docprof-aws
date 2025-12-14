@@ -38,6 +38,7 @@ def create_session(
     session_name: Optional[str] = None,
     session_type: str = "chat",
     session_context: Optional[str] = None,
+    selected_book_ids: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
     """
     Create a new chat session.
@@ -49,6 +50,7 @@ def create_session(
         session_name: Optional user-friendly session name
         session_type: Session type (chat, lecture, quiz, case_study)
         session_context: Optional context for guiding conversation
+        selected_book_ids: Optional list of selected book IDs for filtering search
     
     Returns:
         Session dictionary matching ChatState structure
@@ -64,6 +66,7 @@ def create_session(
         'session_name': session_name,
         'session_type': session_type,
         'session_context': session_context,
+        'selected_book_ids': selected_book_ids or [],  # Store selected books for filtering
         'created_at': now.isoformat(),
         'updated_at': now.isoformat(),
         'messages': [],
@@ -115,6 +118,22 @@ def get_session(session_id: str) -> Optional[Dict[str, Any]]:
         return None
 
 
+def _clean_for_dynamodb(value: Any) -> Any:
+    """Recursively clean data structure for DynamoDB compatibility.
+    
+    DynamoDB doesn't support float types - convert to string.
+    Also handles nested dicts and lists.
+    """
+    if isinstance(value, float):
+        return str(value)  # Convert float to string
+    elif isinstance(value, dict):
+        return {k: _clean_for_dynamodb(v) for k, v in value.items()}
+    elif isinstance(value, list):
+        return [_clean_for_dynamodb(item) for item in value]
+    else:
+        return value
+
+
 def update_session(session_data: Dict[str, Any]) -> None:
     """
     Save updated chat session state.
@@ -133,13 +152,20 @@ def update_session(session_data: Dict[str, Any]) -> None:
     now = datetime.now(timezone.utc)
     session_data['updated_at'] = now.isoformat()
     
+    # Ensure selected_book_ids exists (for backward compatibility)
+    if 'selected_book_ids' not in session_data:
+        session_data['selected_book_ids'] = []
+    
     # Update TTL (extend expiration)
     expires_at = int((now + timedelta(seconds=SESSION_TTL_SECONDS)).timestamp())
     session_data['expires_at'] = expires_at
     
+    # Clean data for DynamoDB compatibility (convert floats to strings)
+    cleaned_data = _clean_for_dynamodb(session_data)
+    
     try:
         table = get_table()
-        table.put_item(Item=session_data)
+        table.put_item(Item=cleaned_data)
         logger.debug(f"Updated session {session_id}")
     except Exception as e:
         logger.error(f"Failed to update session {session_id}: {e}", exc_info=True)

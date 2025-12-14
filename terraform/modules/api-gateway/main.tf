@@ -313,9 +313,9 @@ locals {
   # Compute parent_id for each endpoint
   endpoint_parent_ids = {
     for k in keys(local.endpoints_needing_resources) :
-    k => length(local.endpoint_paths[k]) > 2 
+    k => length(local.endpoint_paths[k]) > 2
       ? (contains(keys(local.endpoint_to_intermediate), k) ? local.endpoint_to_intermediate[k] : aws_api_gateway_resource.parent[local.endpoint_paths[k][0]].id)
-      : (length(local.endpoint_paths[k]) > 1 
+      : (length(local.endpoint_paths[k]) > 1
         ? (
           # Check if an intermediate resource already exists for this path segment
           # For "books/{bookId}", check if "{bookId}" intermediate resource exists under "books"
@@ -395,6 +395,13 @@ resource "aws_api_gateway_method" "this" {
   request_parameters = {
     "method.request.header.Content-Type" = false
   }
+
+  # Force recreation if configuration changes to avoid orphaned methods
+  lifecycle {
+    replace_triggered_by = [
+      aws_api_gateway_rest_api.this
+    ]
+  }
 }
 
 # API Gateway Integration
@@ -412,6 +419,13 @@ resource "aws_api_gateway_integration" "this" {
   # For AWS_PROXY integration, content_handling is not used - API Gateway handles base64 decoding automatically
   # based on isBase64Encoded flag and binary_media_types configuration
   content_handling = null
+
+  # Force recreation if configuration changes
+  lifecycle {
+    replace_triggered_by = [
+      aws_api_gateway_method.this[each.key]
+    ]
+  }
 }
 
 # Lambda Permission for API Gateway
