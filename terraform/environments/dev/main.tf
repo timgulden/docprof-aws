@@ -565,6 +565,62 @@ module "book_cover_lambda" {
   ]
 }
 
+# Book PDF Lambda (returns PDF files from database)
+module "book_pdf_lambda" {
+  source = "../../modules/lambda"
+
+  project_name  = local.project_name
+  environment   = local.environment
+  function_name = "book-pdf"
+
+  handler     = "handler.lambda_handler"
+  runtime     = "python3.11"
+  timeout     = 60  # 60 seconds (PDFs can be large)
+  memory_size = 512 # 512MB for larger PDFs
+
+  source_path = "${path.module}/../../../src/lambda/book_pdf"
+
+  # Use shared Lambda execution role
+  role_arn = module.iam.lambda_execution_role_arn
+
+  # Attach layers: Python dependencies + Shared code
+  layers = [
+    module.lambda_layer.layer_arn,
+    module.shared_code_layer.layer_arn
+  ]
+
+  # Don't bundle shared code - use layer instead
+  bundle_shared_code = false
+
+  # Environment variables for database access and S3
+  environment_variables = {
+    DB_CLUSTER_ENDPOINT    = module.aurora.cluster_endpoint
+    DB_NAME                = module.aurora.database_name
+    DB_MASTER_USERNAME     = module.aurora.master_username
+    DB_PASSWORD_SECRET_ARN = module.aurora.master_password_secret_arn
+    SOURCE_BUCKET          = module.s3.source_docs_bucket_name
+  }
+
+  # VPC config needed for database access
+  vpc_config = {
+    subnet_ids         = module.vpc.private_subnet_ids
+    security_group_ids = [module.vpc.lambda_security_group_id]
+  }
+
+  tags = {
+    Component = "books"
+    Function  = "pdf"
+  }
+
+  depends_on = [
+    module.aurora,
+    module.vpc,
+    module.iam,
+    module.lambda_layer,
+    module.shared_code_layer
+  ]
+}
+
 # Book Delete Lambda
 module "book_delete_lambda" {
   source = "../../modules/lambda"
@@ -1321,6 +1377,13 @@ module "api_gateway" {
       path                 = "books/{bookId}/cover"
       require_auth         = true # Require authentication - frontend fetches via axios with auth headers
     }
+    book_pdf = {
+      method               = "GET"
+      lambda_function_name = module.book_pdf_lambda.function_name
+      lambda_invoke_arn    = module.book_pdf_lambda.function_invoke_arn
+      path                 = "books/{bookId}/pdf"
+      require_auth         = true # Require authentication - frontend fetches via axios with auth headers
+    }
     book_analyze = {
       method               = "POST"
       lambda_function_name = module.book_upload_lambda.function_name
@@ -1358,6 +1421,7 @@ module "api_gateway" {
     module.course_status_handler_lambda,
     module.tunnel_status_lambda,
     module.book_cover_lambda,
+    module.book_pdf_lambda,
     module.book_delete_lambda,
     module.cognito # Ensure Cognito is created before API Gateway
   ]

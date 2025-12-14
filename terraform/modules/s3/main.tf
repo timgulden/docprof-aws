@@ -74,18 +74,19 @@ resource "aws_s3_bucket_public_access_block" "source_docs" {
 
 # CORS configuration for source docs bucket
 # Allows direct uploads from frontend using pre-signed POST URLs
+# Also allows GET requests for fetching PDFs via presigned URLs
 resource "aws_s3_bucket_cors_configuration" "source_docs" {
   bucket = aws_s3_bucket.source_docs.id
 
   cors_rule {
     allowed_headers = ["*"]
-    allowed_methods = ["POST", "PUT"]
+    allowed_methods = ["GET", "POST", "PUT", "HEAD"]
     allowed_origins = [
       "http://localhost:5173",  # Vite dev server
       "http://localhost:3000",  # Alternative dev port
       "https://*.cloudfront.net",  # Production CloudFront distribution
     ]
-    expose_headers  = ["ETag"]
+    expose_headers  = ["ETag", "Content-Length", "Content-Type", "Content-Disposition"]
     max_age_seconds = 3000
   }
 }

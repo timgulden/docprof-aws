@@ -137,17 +137,26 @@ export const fetchBookPDF = async (bookId: string): Promise<{ url: string; blob?
   }
 
   try {
-    // Fetch from API
+    // Fetch presigned URL from API (returns JSON with pdf_url)
     const response = await apiClient.get(`/books/${bookId}/pdf`, {
-      responseType: "blob",
+      responseType: "json",
     });
 
-    // Verify it's actually a PDF
-    if (!(response.data instanceof Blob)) {
-      throw new Error("Response is not a Blob");
+    // Response should be { pdf_url: string, expires_in: number }
+    if (!response.data || !response.data.pdf_url) {
+      throw new Error("Invalid response: missing pdf_url");
     }
 
-    const pdfBlob = response.data;
+    const presignedUrl = response.data.pdf_url;
+    
+    // Fetch the actual PDF from the presigned S3 URL
+    const pdfResponse = await fetch(presignedUrl);
+    if (!pdfResponse.ok) {
+      throw new Error(`Failed to fetch PDF from S3: ${pdfResponse.statusText}`);
+    }
+
+    const pdfBlob = await pdfResponse.blob();
+    
     // Ensure correct MIME type
     if (!pdfBlob.type || pdfBlob.type !== "application/pdf") {
       // Create a new blob with correct type
