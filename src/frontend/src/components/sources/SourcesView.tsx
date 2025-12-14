@@ -25,6 +25,14 @@ export const SourcesView = () => {
 
   const books = data ?? [];
 
+  // Separate books by ingestion status (calculate before early returns)
+  const processingBooks = books.filter(
+    (book) => book.ingestion_status && book.ingestion_status !== "complete"
+  );
+  const completedBooks = books.filter(
+    (book) => !book.ingestion_status || book.ingestion_status === "complete"
+  );
+
   // Initialize selection ONCE on first load - select only COMPLETED books by default
   // Exclude processing books from initial selection
   // Only runs if no books are currently selected AND we haven't initialized yet
@@ -40,7 +48,21 @@ export const SourcesView = () => {
       hasInitialized.current = true;
     }
   }, [books, selectedBookIds.length, selectAllBooks]);
+  
+  // Deselect any books that are now processing (they were selected before processing started)
+  // This ensures processing books are never selected
+  useEffect(() => {
+    const processingBookIds = new Set(processingBooks.map(b => b.book_id));
+    selectedBookIds.forEach((bookId) => {
+      if (processingBookIds.has(bookId)) {
+        // Book is processing but still selected - deselect it
+        toggleBookSelection(bookId);
+      }
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [processingBooks.length, books.map(b => `${b.book_id}:${b.ingestion_status}`).join(',')]);
 
+  // Early returns AFTER all hooks
   if (isLoading) {
     return (
       <div className="flex h-full items-center justify-center">
@@ -68,27 +90,6 @@ export const SourcesView = () => {
       </div>
     );
   }
-
-  // Separate books by ingestion status
-  const processingBooks = books.filter(
-    (book) => book.ingestion_status && book.ingestion_status !== "complete"
-  );
-  const completedBooks = books.filter(
-    (book) => !book.ingestion_status || book.ingestion_status === "complete"
-  );
-  
-  // Deselect any books that are now processing (they were selected before processing started)
-  // This ensures processing books are never selected
-  useEffect(() => {
-    const processingBookIds = new Set(processingBooks.map(b => b.book_id));
-    selectedBookIds.forEach((bookId) => {
-      if (processingBookIds.has(bookId)) {
-        // Book is processing but still selected - deselect it
-        toggleBookSelection(bookId);
-      }
-    });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [processingBooks.length, books.map(b => `${b.book_id}:${b.ingestion_status}`).join(',')]);
 
   // Only count selected books that actually exist in completedBooks
   // This prevents counting deleted books or books that are still processing
