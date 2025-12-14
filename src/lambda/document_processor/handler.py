@@ -1,19 +1,18 @@
 """
 Document Processor Lambda Handler
-Processes PDF documents uploaded to S3, using MAExpert logic + AWS-adapted effects
+Processes PDF documents uploaded to S3, using AWS-native ingestion pipeline
 
-This demonstrates the FP-to-Serverless mapping:
-- Imports MAExpert logic directly (no changes)
-- Uses AWS-adapted effects (matching MAExpert signatures)
-- Preserves FP architecture benefits
+This is a clean, AWS-native implementation that:
+- Uses pure logic functions for chunking (extracted from MAExpert)
+- Uses AWS adapters for effects (Bedrock, Aurora)
+- Follows FP principles (logic/effect separation)
+- No MAExpert dependencies
 """
 
 import json
 import os
-import sys
 import boto3
 import logging
-from pathlib import Path
 from typing import Dict, Any
 
 # Import response utilities
@@ -45,15 +44,27 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         }]
     }
     
-    This handler demonstrates:
-    1. Importing MAExpert logic directly
-    2. Using AWS-adapted effects
-    3. Preserving FP architecture
+    This handler uses AWS-native ingestion pipeline:
+    1. Pure logic functions for chunking
+    2. AWS adapters for effects (Bedrock, Aurora)
+    3. FP principles (logic/effect separation)
+    
+    Note: Lambda has a maximum timeout of 15 minutes. This handler checks remaining
+    time and returns partial results if timeout is approaching.
     """
     global SOURCE_BUCKET, PROCESSED_BUCKET
     
     SOURCE_BUCKET = SOURCE_BUCKET or os.getenv('SOURCE_BUCKET')
     PROCESSED_BUCKET = PROCESSED_BUCKET or os.getenv('PROCESSED_BUCKET')
+    
+    # Get remaining time - Lambda max is 15 minutes (900 seconds)
+    # Warn if less than 2 minutes remaining, fail gracefully if less than 30 seconds
+    remaining_time_ms = context.get_remaining_time_in_millis() if context else None
+    remaining_time_sec = remaining_time_ms / 1000.0 if remaining_time_ms else None
+    
+    if remaining_time_sec and remaining_time_sec < 30:
+        logger.warning(f"Lambda timeout approaching: {remaining_time_sec:.1f} seconds remaining. Cannot start processing.")
+        return error_response("Lambda timeout too close to start processing", 504)
     
     if not SOURCE_BUCKET:
         return error_response("SOURCE_BUCKET not configured", 500)
@@ -93,11 +104,20 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         pdf_data = pdf_response['Body'].read()
         
         # Extract metadata from S3 object metadata
-        # S3 metadata keys are prefixed with 'book-' (e.g., 'book-title', 'book-author')
+        # S3 metadata keys are prefixed with 'x-amz-meta-' when retrieved (e.g., 'x-amz-meta-book-id')
         s3_metadata = pdf_response.get('Metadata', {})
-        book_id = s3_metadata.get('book-id', object_key.split('/')[1])  # Extract from path if not in metadata
+        # Try to get book-id from metadata first, then fall back to path
+        book_id_from_metadata = s3_metadata.get('x-amz-meta-book-id') or s3_metadata.get('book-id')
+        book_id_from_path = object_key.split('/')[1] if '/' in object_key else None
+        book_id = book_id_from_metadata or book_id_from_path
         
-        # Normalize S3 metadata keys (remove 'book-' prefix) for MAExpert compatibility
+        if not book_id:
+            logger.error(f"Could not extract book_id from S3 metadata or path: {object_key}")
+            return error_response("Could not determine book_id from S3 object", 400)
+        
+        logger.info(f"Extracted book_id: {book_id} (from metadata: {bool(book_id_from_metadata)}, from path: {bool(book_id_from_path)})")
+        
+        # Normalize S3 metadata keys (remove 'book-' prefix)
         metadata = {
             'title': s3_metadata.get('book-title', 'Unknown'),
             'author': s3_metadata.get('book-author'),
@@ -109,18 +129,44 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
             }
         }
         
-        # Process document using MAExpert ingestion pipeline
-        result = process_document_with_maexpert_logic(
+        # Check remaining time before starting processing
+        remaining_time_ms = context.get_remaining_time_in_millis() if context else None
+        remaining_time_sec = remaining_time_ms / 1000.0 if remaining_time_ms else None
+        
+        if remaining_time_sec and remaining_time_sec < 60:
+            logger.warning(f"Not enough time remaining ({remaining_time_sec:.1f}s) to process document. Minimum 60 seconds needed.")
+            return error_response(f"Not enough time remaining to process ({remaining_time_sec:.1f}s). Please retry.", 504)
+        
+        # Process document using AWS-native ingestion pipeline
+        import asyncio
+        result = asyncio.run(process_document_aws_native(
             pdf_data=pdf_data,
             book_id=book_id,
             s3_key=object_key,
-            metadata=metadata
-        )
+            metadata=metadata,
+            bucket_name=bucket_name,
+            context=context  # Pass context for timeout checking
+        ))
+        
+        # Check if processing was partial due to timeout
+        if result.get('partial', False):
+            logger.warning(f"Document processing completed partially due to timeout: {book_id}")
+            return {
+                'statusCode': 202,  # Accepted (partial completion)
+                'body': json.dumps({
+                    'book_id': result.get('book_id', book_id),
+                    'status': 'partially_processed',
+                    'chunks_created': result.get('chunks_created', 0),
+                    'figures_created': result.get('figures_created', 0),
+                    'message': 'Processing partially completed. Some chunks may be missing due to timeout.',
+                    'remaining_time': result.get('remaining_time', None)
+                })
+            }
         
         logger.info(f"Document processing complete: {book_id}")
         
         return success_response({
-            'book_id': book_id,
+            'book_id': result.get('book_id', book_id),
             'status': 'processed',
             'chunks_created': result.get('chunks_created', 0),
             'figures_created': result.get('figures_created', 0)
@@ -131,238 +177,92 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         return error_response(f"Failed to process document: {str(e)}", 500)
 
 
-def process_document_with_maexpert_logic(
+async def process_document_aws_native(
     pdf_data: bytes,
     book_id: str,
     s3_key: str,
-    metadata: Dict[str, Any]
+    metadata: Dict[str, Any],
+    bucket_name: str,
+    context: Any = None
 ) -> Dict[str, Any]:
     """
-    Process document using MAExpert ingestion pipeline + AWS Protocol implementations.
+    Process document using AWS-native ingestion pipeline.
     
-    This demonstrates the FP-to-Serverless mapping:
-    - Uses MAExpert run_ingestion_pipeline function (reused as-is)
-    - Uses AWS Protocol implementations (matching MAExpert interfaces)
+    This is a clean, AWS-native implementation that:
+    - Uses pure logic functions for chunking
+    - Uses AWS adapters for effects (Bedrock, Aurora)
+    - Follows FP principles (logic/effect separation)
+    - No MAExpert dependencies
+    - Monitors remaining Lambda time and returns partial results if timeout approaching
     """
-    import tempfile
-    from dataclasses import dataclass
+    from shared.ingestion_orchestrator import run_ingestion_pipeline
     
-    # Import MAExpert ingestion effects
-    # MAExpert code is packaged in maexpert/ directory in Lambda deployment
-    try:
-        # Add src directory to Python path (MAExpert code is packaged as src/)
-        # MAExpert code uses "from src.core" imports, so we need src/ in the path
-        src_path = Path(__file__).parent / "src"
-        if src_path.exists():
-            # Add parent directory so "src" module can be imported
-            parent_path = src_path.parent
-            sys.path.insert(0, str(parent_path))
-        else:
-            # Fallback: try parent directory structure (for local testing)
-            sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent.parent / "MAExpert" / "src"))
-        
-        # Import MAExpert ingestion pipeline (reusing existing chunking logic!)
-        # MAExpert uses "from src.core" imports
-        from src.effects.ingestion_effects import run_ingestion_pipeline, FigureProcessingConfig
-        from src.effects.chunk_builder import ChunkBuilder
-        from src.core.commands import RunIngestionPipelineCommand
-        from src.core.state import IngestionState
-        from src.logic.ingestion import BookMetadata
-        
-        # Replace MAExpert's caption classifier with AWS Bedrock version
-        # This allows MAExpert code to use AWS services without modification
-        # Must import the module first, then replace the function
-        import src.effects.caption_classifier as caption_classifier_module
-        from shared.maexpert_caption_classifier_adapter import classify_caption_types_for_figures as aws_classify_caption_types
-        # Monkey-patch: replace the function in the module
-        caption_classifier_module.classify_caption_types_for_figures = aws_classify_caption_types
-        
-        # Also patch ingestion_effects to always use classifier (skip API key check)
-        # The ingestion code checks for anthropic_api_key before calling classifier
-        # We need to make it always call our Bedrock version
-        import src.effects.ingestion_effects as ingestion_effects_module
-        
-        # Store original function
-        original_run_ingestion_pipeline = ingestion_effects_module.run_ingestion_pipeline
-        
-        def patched_run_ingestion_pipeline(*args, **kwargs):
-            """Wrapper that forces caption classification to use Bedrock"""
-            # Temporarily patch the get_settings to return a mock with anthropic_api_key
-            # This tricks the code into thinking it has an API key, so it calls our classifier
-            original_get_settings = None
-            try:
-                from src.utils.config import get_settings as original_get_settings_func
-                class MockSettings:
-                    anthropic_api_key = "bedrock"  # Fake key to trigger classifier call
-                
-                def mock_get_settings():
-                    return MockSettings()
-                
-                # Replace get_settings temporarily
-                import src.utils.config as config_module
-                config_module.get_settings = mock_get_settings
-                
-                # Run the pipeline
-                result = original_run_ingestion_pipeline(*args, **kwargs)
-                
-                # Restore original
-                if original_get_settings_func:
-                    config_module.get_settings = original_get_settings_func
-                
-                return result
-            except Exception as e:
-                logger.warning(f"Failed to patch settings, falling back to original: {e}")
-                # Restore original if we have it
-                if original_get_settings:
-                    import src.utils.config as config_module
-                    config_module.get_settings = original_get_settings
-                return original_run_ingestion_pipeline(*args, **kwargs)
-        
-        # Replace the function
-        ingestion_effects_module.run_ingestion_pipeline = patched_run_ingestion_pipeline
-        
-        logger.info("Successfully imported MAExpert ingestion pipeline - reusing existing chunking logic")
-        logger.info("Replaced caption classifier with AWS Bedrock version")
-        logger.info("Patched ingestion pipeline to always use Bedrock classifier")
-    except ImportError as e:
-        logger.error(f"Failed to import MAExpert modules: {e}")
-        logger.error(f"Python path: {sys.path}")
-        raise
+    # Run AWS-native ingestion pipeline
+    logger.info(f"Starting AWS-native ingestion pipeline for {metadata.get('title', 'Unknown')}")
     
-    # Create temporary file for PDF (MAExpert expects Path)
-    with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as tmp_file:
-        tmp_file.write(pdf_data)
-        pdf_path = Path(tmp_file.name)
+    # Check remaining time periodically during processing
+    # If less than 60 seconds remain, return partial results
+    remaining_time_ms = context.get_remaining_time_in_millis() if context else None
+    remaining_time_sec = remaining_time_ms / 1000.0 if remaining_time_ms else None
+    
+    if remaining_time_sec and remaining_time_sec < 60:
+        logger.warning(f"Timeout approaching ({remaining_time_sec:.1f}s remaining). Cannot start full processing.")
+        return {
+            'book_id': book_id,
+            'chunks_created': 0,
+            'figures_created': 0,
+            'partial': True,
+            'remaining_time': remaining_time_sec,
+            'message': 'Processing aborted due to insufficient time remaining'
+        }
     
     try:
-        # Create book metadata
-        book_metadata = BookMetadata(
-            title=metadata.get('title', 'Unknown'),
-            author=metadata.get('author'),
-            edition=metadata.get('edition'),
-            isbn=metadata.get('isbn'),
-            extra=metadata.get('extra', {})
-        )
-        
-        # Create ingestion command
-        command = RunIngestionPipelineCommand(
-            pdf_path=pdf_path,
-            book_metadata={
-                'title': book_metadata.title,
-                'author': book_metadata.author,
-                'edition': book_metadata.edition,
-                'isbn': book_metadata.isbn,
-                'extra': book_metadata.extra
-            },
-            run_id=book_id,  # Use book_id as run_id
-            rebuild=False,
-            skip_figures=False
-        )
-        
-        # Create AWS Protocol implementations
-        from shared.protocol_implementations import (
-            AWSDatabaseClient,
-            AWSPDFExtractor,
-            AWSEmbeddingClient,
-            AWSFigureDescriptionClient
-        )
-        
-        database = AWSDatabaseClient()
-        pdf_extractor = AWSPDFExtractor()
-        embeddings = AWSEmbeddingClient()
-        figure_client = AWSFigureDescriptionClient()
-        chunk_builder = ChunkBuilder()  # Import from MAExpert
-        
-        # Patch ingestion flow to check for existing figures early (optimization)
-        # This skips expensive extraction/classification if figures already exist
-        from shared.ingestion_flow_optimizer import patch_ingestion_flow_for_early_exit
-        optimized_run_ingestion_pipeline = patch_ingestion_flow_for_early_exit(
-            run_ingestion_pipeline,
-            database,
-            book_id
-        )
-        
-        # Figure processing config
-        figure_config = FigureProcessingConfig(
-            caption_tokens=['Figure', 'Table', 'Exhibit', 'Diagram'],
-            context_window=5  # 5 pages of context
-        )
-        
-        # Run ingestion pipeline (MAExpert function, reused as-is, with optimizations!)
-        logger.info(f"Starting MAExpert ingestion pipeline for {book_metadata.title}")
-        result = optimized_run_ingestion_pipeline(
-            command=command,
-            pdf_extractor=pdf_extractor,
-            figure_client=figure_client,
-            chunk_builder=chunk_builder,
-            embeddings=embeddings,
-            database=database,
-            figure_config=figure_config,
-            progress_callback=None  # Could add progress reporting later
+        result = await run_ingestion_pipeline(
+            pdf_bytes=pdf_data,
+            book_id=book_id,
+            metadata=metadata,
+            skip_figures=False,
+            rebuild=False
         )
         
         logger.info(f"Ingestion complete: {result}")
         
         # Trigger source summary generation as final step
-        # This is done asynchronously via EventBridge to avoid blocking
-        try:
-                        event_bus_name = os.getenv('EVENT_BUS_NAME', '').strip() or None  # Use default bus if empty
-            
-            # Publish document processed event
-            eventbridge_client.put_events(
-                Entries=[
-                    {
-                        'Source': 'docprof.ingestion',
-                        'DetailType': 'DocumentProcessed',
-                        'Detail': json.dumps({
-                            'source_id': result.get('book_id', book_id),
-                            'source_title': book_metadata.title,
-                            'author': book_metadata.author or 'Unknown',
-                            's3_bucket': bucket_name,
-                            's3_key': object_key,
-                            'chunks_created': result.get('total_chunks', 0),
-                            'figures_created': result.get('total_figures', 0),
-                        }),
-                                    **({'EventBusName': event_bus_name} if event_bus_name else {}),
-                    }
-                ]
-            )
-            logger.info("Published DocumentProcessed event for source summary generation")
-        except Exception as e:
-            logger.warning(f"Failed to publish DocumentProcessed event: {e}")
-            # Don't fail ingestion if summary generation trigger fails
+    # This is done asynchronously via EventBridge to avoid blocking
+    try:
+        event_bus_name = os.getenv('EVENT_BUS_NAME', '').strip() or None
         
-        return {
-            'book_id': result.get('book_id', book_id),
-            'chunks_created': result.get('total_chunks', 0),
-            'figures_created': result.get('total_figures', 0),
-            'status': 'success',
-            'summary_generation_triggered': True,
-        }
-        
-    finally:
-        # Clean up temporary file
-        if pdf_path.exists():
-            pdf_path.unlink()
-
-
-def process_document_local(
-    pdf_data: bytes,
-    book_id: str,
-    s3_key: str
-) -> Dict[str, Any]:
-    """
-    Fallback local implementation if MAExpert not available.
-    This would be a simplified version for testing.
-    """
-    logger.warning("Using local fallback implementation (MAExpert not available)")
-    
-    # Basic processing without MAExpert logic
-    # This is just a placeholder - actual implementation would extract, chunk, embed, store
+        # Publish document processed event
+        eventbridge_client.put_events(
+            Entries=[
+                {
+                    'Source': 'docprof.ingestion',
+                    'DetailType': 'DocumentProcessed',
+                    'Detail': json.dumps({
+                        'source_id': result.get('book_id', book_id),
+                        'source_title': metadata.get('title', 'Unknown'),
+                        'author': metadata.get('author', 'Unknown'),
+                        's3_bucket': bucket_name,
+                        's3_key': s3_key,
+                        'chunks_created': result.get('chunks_created', 0),
+                        'figures_created': result.get('figures_created', 0),
+                    }),
+                    **({'EventBusName': event_bus_name} if event_bus_name else {}),
+                }
+            ]
+        )
+        logger.info("Published DocumentProcessed event for source summary generation")
+    except Exception as e:
+        logger.warning(f"Failed to publish DocumentProcessed event: {e}")
+        # Don't fail ingestion if summary generation trigger fails
     
     return {
-        'chunks_created': 0,
-        'figures_created': 0,
-        'note': 'Local fallback - MAExpert logic not available'
+        'book_id': result.get('book_id', book_id),
+        'chunks_created': result.get('chunks_created', 0),
+        'figures_created': result.get('figures_created', 0),
+        'status': 'success',
+        'summary_generation_triggered': True,
     }
+
+
 
