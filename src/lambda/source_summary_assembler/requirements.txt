@@ -1,0 +1,5 @@
+# Source Summary Assembler Lambda
+# Assembles final source summary from all chapter summaries
+
+# Shared dependencies are in the Lambda layer
+# This file is for any assembler-specific dependencies if needed

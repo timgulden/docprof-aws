@@ -135,16 +135,36 @@ def execute_llm_command(command: LLMCommand) -> Dict[str, Any]:
         
         content = response.get('content', '')
         usage = response.get('usage', {})
+        model_used = response.get('model_used', 'unknown')
+        model_switched = response.get('model_switched', False)
         
-        logger.info(f"LLM response for task: {command.task}, tokens: {usage.get('input_tokens', 0) + usage.get('output_tokens', 0)}")
+        logger.info(f"LLM response for task: {command.task}, tokens: {usage.get('input_tokens', 0) + usage.get('output_tokens', 0)}, model: {model_used}")
         
-        return {
+        result = {
             'status': 'success',
             'content': content,
             'usage': usage,
             'task': command.task,
             'prompt_name': command.prompt_name,
+            'model_used': model_used,
         }
+        
+        # If model was switched, add notification info
+        if model_switched:
+            primary_model = response.get('primary_model', 'primary')
+            fallback_model = response.get('fallback_model', 'fallback')
+            logger.warning(
+                f"Model switched from {primary_model} to {fallback_model} "
+                f"due to daily token limit (task: {command.task})"
+            )
+            result['model_switched'] = True
+            result['model_switch_notification'] = (
+                f"Note: Using backup model ({fallback_model}) because the primary model "
+                f"({primary_model}) has reached its daily token limit. "
+                f"Quality may vary slightly."
+            )
+        
+        return result
         
     except Exception as e:
         logger.error(f"Error executing LLMCommand: {e}", exc_info=True)
@@ -262,19 +282,71 @@ def execute_search_corpus_command(command: SearchCorpusCommand) -> Dict[str, Any
 
 
 def execute_retrieve_chunks_command(command: RetrieveChunksCommand) -> Dict[str, Any]:
-    """Execute RetrieveChunksCommand - retrieve chunks by IDs."""
+    """Execute RetrieveChunksCommand - retrieve chunks by IDs from database."""
     try:
-        # TODO: Implement chunk retrieval by IDs
-        # This requires querying chunks table by chunk_id
+        chunk_ids = command.chunk_ids
         
-        logger.warning("RetrieveChunksCommand not yet implemented")
+        if not chunk_ids:
+            logger.warning("RetrieveChunksCommand called with empty chunk_ids")
+            return {
+                'status': 'success',
+                'chunks': [],
+                'chunk_ids': [],
+            }
+        
+        logger.info(f"Retrieving {len(chunk_ids)} chunks from database")
+        
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                # Query chunks by IDs
+                # Use ANY to match multiple UUIDs
+                cur.execute("""
+                    SELECT 
+                        c.chunk_id,
+                        c.book_id,
+                        c.chunk_type,
+                        c.content,
+                        c.page_start,
+                        c.page_end,
+                        c.chapter_number,
+                        c.chapter_title,
+                        b.title as book_title,
+                        b.author as book_author
+                    FROM chunks c
+                    LEFT JOIN books b ON c.book_id = b.book_id
+                    WHERE c.chunk_id = ANY(%s::uuid[])
+                    ORDER BY c.page_start
+                """, (chunk_ids,))
+                
+                rows = cur.fetchall()
+                
+                # Format chunks as dicts
+                chunks = []
+                for row in rows:
+                    (chunk_id, book_id, chunk_type, content, page_start, page_end,
+                     chapter_number, chapter_title, book_title, book_author) = row
+                    
+                    chunks.append({
+                        'chunk_id': str(chunk_id),
+                        'book_id': str(book_id),
+                        'chunk_type': chunk_type,
+                        'content': content,
+                        'page_start': page_start,
+                        'page_end': page_end,
+                        'chapter_number': chapter_number,
+                        'chapter_title': chapter_title,
+                        'book_title': book_title,
+                        'book_author': book_author,
+                    })
+                
+                logger.info(f"✓ Retrieved {len(chunks)} chunks")
         
         return {
             'status': 'success',
-            'chunks': [],  # Empty until implemented
-            'chunk_ids': command.chunk_ids,
+            'chunks': chunks,
+            'chunk_ids': chunk_ids,
         }
-        
+
     except Exception as e:
         logger.error(f"Error executing RetrieveChunksCommand: {e}", exc_info=True)
         return {
@@ -456,19 +528,46 @@ def execute_create_sections_command(command: CreateSectionsCommand) -> Dict[str,
 
 
 def execute_store_lecture_command(command: StoreLectureCommand) -> Dict[str, Any]:
-    """Execute StoreLectureCommand - store lecture delivery."""
+    """Execute StoreLectureCommand - store lecture delivery to database."""
     try:
-        # TODO: Implement lecture storage
-        # This requires:
-        # 1. section_deliveries table
-        # 2. Insert delivery record
+        delivery = command.delivery
         
-        logger.warning("StoreLectureCommand not yet implemented")
+        logger.info(f"Storing lecture for section {delivery.section_id}")
+        
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                # Insert or update section delivery
+                cur.execute("""
+                    INSERT INTO section_deliveries (
+                        delivery_id, section_id, user_id, lecture_script,
+                        delivered_at, duration_actual_minutes, user_notes, style_snapshot
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (delivery_id) DO UPDATE SET
+                        lecture_script = EXCLUDED.lecture_script,
+                        delivered_at = EXCLUDED.delivered_at,
+                        duration_actual_minutes = EXCLUDED.duration_actual_minutes,
+                        user_notes = EXCLUDED.user_notes,
+                        style_snapshot = EXCLUDED.style_snapshot
+                    RETURNING delivery_id
+                """, (
+                    delivery.delivery_id,
+                    delivery.section_id,
+                    delivery.user_id,
+                    delivery.lecture_script,
+                    delivery.delivered_at,
+                    delivery.duration_actual_minutes,
+                    delivery.user_notes,
+                    json.dumps(delivery.style_snapshot) if delivery.style_snapshot else '{}'
+                ))
+                delivery_id = cur.fetchone()[0]
+                conn.commit()
+                
+                logger.info(f"✓ Lecture stored with delivery_id: {delivery_id}")
         
         return {
             'status': 'success',
-            'delivery_id': command.delivery.delivery_id,
-            'section_id': command.delivery.section_id,
+            'delivery_id': str(delivery_id),
+            'section_id': delivery.section_id,
         }
         
     except Exception as e:
@@ -501,15 +600,170 @@ def execute_get_book_titles_command(command: GetBookTitlesCommand) -> Dict[str, 
         }
 
 
+"""
+Clean TOC extraction implementation - following Lambda best practices.
+Single responsibility functions, no silent fallbacks.
+"""
+
+from typing import Any, Dict, List, Optional
+import logging
+
+logger = logging.getLogger(__name__)
+
+
+def _extract_pdf_metadata(pdf_bytes: bytes) -> Dict[str, Any]:
+    """
+    Extract metadata and page text from PDF.
+    Single responsibility: PDF parsing only.
+    
+    Returns:
+        Dict with source_title, author, total_pages, pages_text
+    """
+    import fitz
+    
+    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+    
+    # Get metadata
+    metadata = doc.metadata
+    source_title = metadata.get('title', 'Unknown')
+    author = metadata.get('author', 'Unknown')
+    total_pages = len(doc)
+    
+    # Extract page text for LLM extraction
+    pages_text = []
+    for page_num in range(len(doc)):
+        try:
+            page = doc[page_num]
+            pages_text.append(page.get_text("text"))
+        except Exception as e:
+            logger.warning(f"Failed to extract text from page {page_num + 1}: {e}")
+            pages_text.append("")
+    
+    doc.close()
+    
+    logger.info(f"Extracted metadata: {total_pages} pages, title: {source_title}")
+    
+    return {
+        'source_title': source_title,
+        'author': author,
+        'total_pages': total_pages,
+        'pages_text': pages_text,
+    }
+
+
+def _extract_chapters_with_dual_path(
+    pdf_bytes: bytes,
+    pages_text: List[str],
+    source_title: str,
+) -> Optional[List]:
+    """
+    Extract chapters using dual-path: hyperlink first (fast), visual if needed (comprehensive).
+    Single responsibility: Chapter extraction orchestration.
+    
+    No fallbacks - fails explicitly if both paths fail.
+    
+    Returns:
+        List of ChapterRange objects, or None if extraction fails
+    """
+    from shared.toc_parser_llm import (
+        find_toc,
+        extract_chapters_from_hyperlinks,
+        identify_chapter_ranges,
+    )
+    
+    # Step 1: Find TOC pages (1 LLM call, ~$0.01)
+    logger.info("Finding TOC pages using LLM vision")
+    toc_pages = find_toc(
+        pdf_bytes=pdf_bytes,
+        pages=pages_text,
+        book_title=source_title,
+    )
+    
+    if not toc_pages:
+        logger.error("Could not find TOC pages in PDF")
+        return None
+    
+    logger.info(f"Found TOC at pages {toc_pages[0]}-{toc_pages[1]}")
+    
+    # Step 2: Try hyperlink extraction (fast, free - just parses hyperlinks)
+    logger.info("Extracting chapters from hyperlinks")
+    hyperlink_chapters = None
+    try:
+        hyperlink_chapters = extract_chapters_from_hyperlinks(
+            pdf_bytes=pdf_bytes,
+            toc_pages=toc_pages,
+            book_title=source_title,
+        )
+        if hyperlink_chapters:
+            logger.info(f"Hyperlink extraction found {len(hyperlink_chapters)} chapters")
+        else:
+            logger.warning("Hyperlink extraction returned no chapters")
+    except Exception as e:
+        logger.error(f"Hyperlink extraction failed: {e}", exc_info=True)
+    
+    # Step 3: If hyperlink insufficient OR we want to verify/enhance, try visual extraction
+    # For now, always try visual to ensure we find all chapters
+    visual_chapters = None
+    if not hyperlink_chapters or len(hyperlink_chapters) < 50:  # Increased threshold to always run for Valuation
+        logger.info(
+            f"Hyperlink extraction insufficient ({len(hyperlink_chapters) if hyperlink_chapters else 0} chapters), "
+            f"trying visual/LLM extraction"
+        )
+        try:
+            visual_chapters = identify_chapter_ranges(
+                pdf_bytes=pdf_bytes,
+                toc_pages=toc_pages,
+                pages=pages_text,
+                book_title=source_title,
+            )
+            if visual_chapters:
+                logger.info(f"Visual extraction found {len(visual_chapters)} chapters")
+            else:
+                logger.warning("Visual extraction returned no chapters")
+        except Exception as e:
+            logger.error(f"Visual extraction failed: {e}", exc_info=True)
+    
+    # Step 4: Use best result (fail explicitly if both failed)
+    if hyperlink_chapters and visual_chapters:
+        if len(visual_chapters) > len(hyperlink_chapters):
+            logger.info(
+                f"Using visual results ({len(visual_chapters)} chapters) "
+                f"over hyperlink ({len(hyperlink_chapters)} chapters)"
+            )
+            return visual_chapters
+        else:
+            logger.info(
+                f"Using hyperlink results ({len(hyperlink_chapters)} chapters) "
+                f"over visual ({len(visual_chapters) if visual_chapters else 0} chapters)"
+            )
+            return hyperlink_chapters
+    elif visual_chapters:
+        logger.info(f"Using visual results ({len(visual_chapters)} chapters)")
+        return visual_chapters
+    elif hyperlink_chapters:
+        logger.info(f"Using hyperlink results ({len(hyperlink_chapters)} chapters)")
+        return hyperlink_chapters
+    else:
+        logger.error("Both hyperlink and visual extraction failed - no chapters extracted")
+        return None
+
+
 def execute_extract_toc_command(command: ExtractTOCCommand) -> Dict[str, Any]:
     """
-    Execute ExtractTOCCommand - extract TOC from PDF in S3.
+    Execute ExtractTOCCommand - always uses LLM extraction for consistent, reliable results.
     
-    Uses PyMuPDF to extract table of contents from PDF.
+    Strategy (no fallbacks):
+    1. Extract PDF metadata and text
+    2. Use dual-path extraction (hyperlink → visual if needed)
+    3. Convert chapters to toc_raw format (all Level 1 for simple parsing)
+    4. Fail explicitly if extraction fails
+    
+    This approach ensures consistent results and avoids silent degradation.
+    Following Lambda best practices: single responsibility, explicit failures.
     """
     try:
         import boto3
-        import fitz  # PyMuPDF
+        from shared.toc_parser_llm import convert_chapter_ranges_to_toc_raw
         
         s3_client = boto3.client('s3')
         
@@ -518,19 +772,41 @@ def execute_extract_toc_command(command: ExtractTOCCommand) -> Dict[str, Any]:
         pdf_response = s3_client.get_object(Bucket=command.s3_bucket, Key=command.s3_key)
         pdf_data = pdf_response['Body'].read()
         
-        # Extract TOC using PyMuPDF
-        doc = fitz.open(stream=pdf_data, filetype="pdf")
-        toc_raw = doc.get_toc()  # Returns list of (level, title, page) tuples
+        # Extract metadata and text (single responsibility)
+        metadata = _extract_pdf_metadata(pdf_data)
+        source_title = metadata['source_title']
+        author = metadata['author']
+        total_pages = metadata['total_pages']
+        pages_text = metadata['pages_text']
         
-        # Get metadata
-        metadata = doc.metadata
-        source_title = metadata.get('title', 'Unknown')
-        author = metadata.get('author', 'Unknown')
-        total_pages = len(doc)
+        # Always use LLM extraction - no PyMuPDF fallback (explicit over implicit)
+        logger.info("Using LLM-based chapter extraction (hyperlink → visual)")
+        chapters = _extract_chapters_with_dual_path(
+            pdf_bytes=pdf_data,
+            pages_text=pages_text,
+            source_title=source_title,
+        )
         
-        doc.close()
+        # Fail explicitly - no silent fallback
+        if not chapters:
+            return {
+                'status': 'error',
+                'error': 'TOC extraction failed - could not extract chapters using hyperlink or visual methods',
+            }
         
-        logger.info(f"Extracted TOC: {len(toc_raw)} entries, {total_pages} pages")
+        # Convert to toc_raw format (all Level 1 for simple parsing)
+        logger.info(f"Converting {len(chapters)} chapters to toc_raw format")
+        page_offset = 0
+        if chapters and chapters[0].start_page:
+            # Rough offset estimate (book pages vs PDF pages)
+            page_offset = max(0, chapters[0].start_page - 50)
+        
+        toc_raw = convert_chapter_ranges_to_toc_raw(
+            chapters,
+            page_offset=page_offset,
+        )
+        
+        logger.info(f"Successfully extracted {len(toc_raw)} chapters for: {source_title}")
         
         return {
             'status': 'success',
@@ -538,6 +814,7 @@ def execute_extract_toc_command(command: ExtractTOCCommand) -> Dict[str, Any]:
             'source_title': source_title,
             'author': author,
             'total_pages': total_pages,
+            # No identified_chapter_level - all entries are Level 1, simple parsing
         }
         
     except Exception as e:
@@ -546,6 +823,8 @@ def execute_extract_toc_command(command: ExtractTOCCommand) -> Dict[str, Any]:
             'status': 'error',
             'error': str(e),
         }
+
+
 
 
 def execute_extract_chapter_text_command(command: ExtractChapterTextCommand) -> Dict[str, Any]:

@@ -6,6 +6,7 @@ Adapted from MAExpert book_summaries.py for Lambda/S3 environment.
 from typing import Any, Dict, List, Optional
 import json
 import logging
+import re
 
 from shared.core.commands import LLMCommand, ExtractTOCCommand, ExtractChapterTextCommand, StoreSourceSummaryCommand
 from shared.core.state import LogicResult
@@ -53,6 +54,12 @@ def is_front_matter(title: str) -> bool:
     return False
 
 
+# Removed: is_real_chapter(), is_part(), is_chapter_title()
+# These complex heuristics are not needed with LLM extraction.
+# LLM extraction already filters chapters, returns them as Level 1 entries.
+# Simple parse_toc_structure (below) trusts the extraction.
+
+
 def parse_toc_structure(
     toc_raw: List[tuple],
     source_title: str,
@@ -62,13 +69,17 @@ def parse_toc_structure(
     """
     Parse raw TOC into structured format with chapters and sections.
     
-    Skips front matter (TOC, title page, preface, etc.) and starts with
-    the first real content chapter.
+    SIMPLIFIED LEGACY LOGIC (tested and working):
+    - Level 1 = chapters (skip front matter only)
+    - Level 2+ = sections
+    
+    When LLM extraction is used (hyperlink/visual), all entries come in as Level 1,
+    so this naturally treats them all as chapters.
     
     Pure function: transforms data structure.
     
     Args:
-        toc_raw: List of (level, title, page) tuples from PDF extraction
+        toc_raw: List of (level, title, page) tuples from extraction
         source_title: Source title
         author: Source author
         total_pages: Total pages in source
@@ -81,17 +92,16 @@ def parse_toc_structure(
     found_first_real_chapter = False
     
     for level, title, page in toc_raw:
-        # Level 1 items are typically chapters
+        # Level 1 items are chapters
         if level == 1:
             # Check if this is front matter
             if is_front_matter(title):
                 # Skip front matter - don't save current chapter if it's front matter
                 if current_chapter and not found_first_real_chapter:
-                    # Clear current chapter if we haven't found first real chapter yet
                     current_chapter = None
                 continue
             
-            # This is a real chapter
+            # This is a real chapter (simple - trust the extraction)
             found_first_real_chapter = True
             
             # Save previous chapter if exists
@@ -105,15 +115,16 @@ def parse_toc_structure(
                 "page_number": page,
                 "sections": [],
             }
+        
         elif level >= 2 and current_chapter:
-            # Nested items are sections (only if we have a real chapter)
+            # All Level 2+ items are sections (simple - no conditional logic)
             current_chapter["sections"].append({
                 "section_title": title.strip(),
                 "page_number": page,
                 "level": level,
             })
     
-    # Add final chapter (if it's a real chapter)
+    # Add final chapter
     if current_chapter:
         chapters.append(current_chapter)
     
@@ -170,10 +181,12 @@ def build_chapter_summary_prompt_variables(
         for s in sections
     ])
     
-    # Limit chapter text to avoid token limits (keep ~50k chars)
-    text_preview = chapter_text[:50000] if len(chapter_text) > 50000 else chapter_text
-    if len(chapter_text) > 50000:
-        text_preview += "\n\n[Content truncated for length...]"
+    # Limit chapter text to avoid token limits (keep ~500k chars, ~125k tokens)
+    # Standard 200k token context window can handle up to ~800k chars, so 500k is safe
+    # This prevents truncation for most chapters while staying well within limits
+    text_preview = chapter_text[:500000] if len(chapter_text) > 500000 else chapter_text
+    if len(chapter_text) > 500000:
+        text_preview += "\n\n[Content truncated for length (chapter exceeds 500k characters)...]"
     
     return {
         "chapter_number": chapter_number,
@@ -361,15 +374,23 @@ def handle_chapter_text_extracted(
 ) -> LogicResult:
     """
     Handle chapter text extraction - generate summary.
-    
+
     Also store Chapter 1 text for source summary extraction.
     """
     # Store Chapter 1 text for source summary
     new_state = state.copy()
     if chapter.get("chapter_number") == 1:
         new_state["chapter_one_text"] = chapter_text
+
+    # Generate chapter summary command
+    summary_result = generate_chapter_summary(chapter, chapter_text)
     
-    return generate_chapter_summary(chapter, chapter_text)
+    # Preserve state (including toc_data) while adding the command
+    return LogicResult(
+        new_state=new_state,  # Preserve all state including toc_data
+        commands=summary_result.commands,
+        ui_message=summary_result.ui_message,
+    )
 
 
 def repair_json_with_llm(
@@ -613,14 +634,23 @@ def handle_chapter_summary_generated(
     # Add to state - ensure chapter_summaries exists
     current_summaries = state.get("chapter_summaries", [])
     new_summaries = current_summaries + [chapter_summary]
-    new_state = dict(state)  # Make a copy
+    new_state = dict(state)  # Make a copy - preserve all existing state including toc_data
     new_state.update({
         "chapter_summaries": new_summaries,
         "current_chapter_index": state.get("current_chapter_index", 0) + 1,
     })
     
     # Check if we've hit the limit (for testing) or all chapters done
-    remaining = len(state["toc_data"]["chapters"]) - new_state["current_chapter_index"]
+    # Ensure toc_data exists before accessing it
+    toc_data = state.get("toc_data") or new_state.get("toc_data")
+    if not toc_data or "chapters" not in toc_data:
+        logger.error("toc_data missing from state - cannot determine remaining chapters")
+        return LogicResult(
+            new_state=state,
+            commands=[],
+            ui_message="Error: Table of contents data missing - cannot continue",
+        )
+    remaining = len(toc_data["chapters"]) - new_state["current_chapter_index"]
     is_complete = remaining == 0 or (max_chapters and len(new_summaries) >= max_chapters)
     
     if is_complete:

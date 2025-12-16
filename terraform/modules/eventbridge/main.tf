@@ -186,6 +186,44 @@ resource "aws_cloudwatch_event_rule" "source_summary_stored" {
   )
 }
 
+# Event Rule: ChapterSummaryRequested → Chapter Summary Processor Lambda
+resource "aws_cloudwatch_event_rule" "chapter_summary_requested" {
+  name           = "${var.project_name}-${var.environment}-chapter-summary-requested"
+  # event_bus_name = aws_cloudwatch_event_bus.course_events.name  # Using default bus
+  description    = "Route ChapterSummaryRequested events to chapter processor"
+
+  event_pattern = jsonencode({
+    source      = ["docprof.ingestion"]
+    detail-type = ["ChapterSummaryRequested"]
+  })
+
+  tags = merge(
+    var.tags,
+    {
+      Name = "${var.project_name}-${var.environment}-chapter-summary-requested-rule"
+    }
+  )
+}
+
+# Event Rule: AllChaptersCompleted → Source Summary Assembler Lambda
+resource "aws_cloudwatch_event_rule" "all_chapters_completed" {
+  name           = "${var.project_name}-${var.environment}-all-chapters-completed"
+  # event_bus_name = aws_cloudwatch_event_bus.course_events.name  # Using default bus
+  description    = "Route AllChaptersCompleted events to source summary assembler"
+
+  event_pattern = jsonencode({
+    source      = ["docprof.ingestion"]
+    detail-type = ["AllChaptersCompleted"]
+  })
+
+  tags = merge(
+    var.tags,
+    {
+      Name = "${var.project_name}-${var.environment}-all-chapters-completed-rule"
+    }
+  )
+}
+
 # Dead Letter Queue for failed events
 resource "aws_sqs_queue" "course_events_dlq" {
   name = "${var.project_name}-${var.environment}-course-events-dlq"

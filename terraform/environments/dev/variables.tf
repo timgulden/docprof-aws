@@ -22,5 +22,11 @@ variable "enable_ai_endpoints" {
   default     = false
 }
 
+variable "alarm_email" {
+  description = "Email address for CloudWatch alarm notifications (optional). If not set, alarms will be created but no notifications will be sent."
+  type        = string
+  default     = null
+}
+
 # Add more variables as needed
 

@@ -57,14 +57,24 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         # Process through logic layer
         result = reduce_course_event(state, course_event)
         
+        logger.info(f"Logic returned {len(result.commands)} commands")
+        
         # Execute commands (LLMCommand for generate_parts)
         parts_text = None
-        for command in result.commands:
+        for idx, command in enumerate(result.commands):
+            logger.info(f"Executing command {idx+1}/{len(result.commands)}: {type(command).__name__}")
             command_result = execute_command(command, result.new_state)
+            logger.info(f"Command result: status={command_result.get('status')}, has_content={'content' in command_result}")
             
             if isinstance(command, LLMCommand):
                 if command_result.get('status') == 'success':
                     parts_text = command_result.get('content', '')
+                    model_switch_notification = command_result.get('model_switch_notification')
+                    if model_switch_notification:
+                        logger.warning(f"Model switch during parts generation: {model_switch_notification}")
+                        # Log to CloudWatch - user can see this in logs
+                        # For async operations, we rely on logging rather than API responses
+                    logger.info(f"LLM returned parts_text (length: {len(parts_text) if parts_text else 0})")
                 else:
                     error_msg = command_result.get('error', 'Unknown error')
                     logger.error(f"Parts generation failed: {error_msg}")

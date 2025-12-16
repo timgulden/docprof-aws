@@ -4,19 +4,48 @@ Uses AWS Bedrock Claude for LLM and Titan for embeddings
 """
 
 import json
-import boto3
 import logging
+import os
 import time
-from typing import List, Dict, Any, Optional, Iterator
+from typing import Any, Dict, Iterator, List, Optional, Union
+
+import boto3
 from botocore.exceptions import ClientError
 
 logger = logging.getLogger(__name__)
 
+# CloudWatch client for custom metrics
+cloudwatch = boto3.client('cloudwatch', region_name=os.getenv("AWS_REGION", "us-east-1"))
+
 # Initialize Bedrock runtime client
 # Use region from environment variable (set by Lambda runtime) or default to us-east-1
-import os
-bedrock_region = os.getenv('AWS_REGION', 'us-east-1')
-bedrock_runtime = boto3.client('bedrock-runtime', region_name=bedrock_region)
+bedrock_region = os.getenv("AWS_REGION", "us-east-1")
+bedrock_runtime = boto3.client("bedrock-runtime", region_name=bedrock_region)
+
+# Model configuration
+# -------------------
+# By default we use the Claude Sonnet 4.5 inference profile ARN constructed
+# from AWS_ACCOUNT_ID and region (legacy behaviour).
+#
+# You can override this without code changes by setting:
+#   - LLM_MODEL_ID:       primary modelId / ARN to use for all Claude calls
+#   - LLM_FALLBACK_MODEL_ID: optional secondary modelId / ARN that will be
+#                            automatically used if the primary model hits
+#                            daily token quota limits ("Too many tokens per day").
+#
+# Example values:
+#   LLM_MODEL_ID=arn:aws:bedrock:us-east-1:123456789012:inference-profile/us.anthropic.claude-sonnet-4-5-20250929-v1:0
+#   LLM_MODEL_ID=anthropic.claude-3-5-sonnet-20241022-v2:0
+#
+# Recommended fallback (Claude 3.5 Sonnet - excellent quality, separate quotas):
+#   LLM_FALLBACK_MODEL_ID=anthropic.claude-3-5-sonnet-20241022-v2:0
+#   # Or via inference profile:
+#   LLM_FALLBACK_MODEL_ID=arn:aws:bedrock:us-east-1:ACCOUNT:inference-profile/us.anthropic.claude-3-5-sonnet-20241022-v2:0
+#
+# NOTE: Fallback is automatically triggered when hitting daily token limits.
+# For other throttling (rate limits), we retry the primary model with backoff.
+PRIMARY_LLM_MODEL_ID_ENV = os.getenv("LLM_MODEL_ID")
+FALLBACK_LLM_MODEL_ID_ENV = os.getenv("LLM_FALLBACK_MODEL_ID")
 
 
 def generate_embeddings(texts: List[str], normalize: bool = True) -> List[List[float]]:
@@ -62,22 +91,32 @@ def generate_embeddings(texts: List[str], normalize: bool = True) -> List[List[f
 
 
 def invoke_claude(
-    messages: List[Dict[str, str]],
+    messages: List[Dict[str, Any]],
     system: Optional[str] = None,
     max_tokens: int = 4096,
     temperature: float = 0.7,
-    stream: bool = False
+    stream: bool = False,
+    model_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
-    Invoke Claude Sonnet 4.5 via Bedrock (using inference profile).
-    Claude Sonnet 4.5 is the newest model with best performance.
+    Invoke a Claude-family model via Bedrock (using modelId or inference profile).
+    
+    By default this uses the Claude Sonnet 4.5 inference profile, but you can
+    override the model without code changes by setting the LLM_MODEL_ID
+    environment variable, or per-call by passing model_id explicitly.
+    
+    Automatic fallback: If the primary model hits a daily token quota limit
+    ("Too many tokens per day") and LLM_FALLBACK_MODEL_ID is configured, this
+    function will automatically retry the request with the fallback model.
     
     Args:
         messages: List of message dicts with 'role' and 'content'
+                 Content can be a string or list of content blocks (text/image)
         system: Optional system prompt
         max_tokens: Maximum tokens to generate
         temperature: Sampling temperature (0-1)
         stream: Whether to stream the response
+        model_id: Optional explicit modelId/ARN override (for per-call model selection)
     
     Returns:
         Response dictionary with 'content' and 'usage' keys
@@ -92,27 +131,38 @@ def invoke_claude(
     if system:
         request_body["system"] = system
     
-    # Use inference profile ARN for Claude models (required for on-demand)
-    # Format: arn:aws:bedrock:region:account-id:inference-profile/profile-id
-    # Use the system-defined inference profile for Claude 3 Sonnet
-    region = bedrock_runtime.meta.region_name
+    # Resolve modelId to use
+    #
+    # Priority:
+    #   1) Explicit model_id argument
+    #   2) LLM_MODEL_ID environment variable
+    #   3) Legacy default: Sonnet 4.5 inference profile ARN constructed
+    #      from AWS_ACCOUNT_ID and region.
+    if model_id is None:
+        if PRIMARY_LLM_MODEL_ID_ENV:
+            model_id = PRIMARY_LLM_MODEL_ID_ENV
+        else:
+            region = bedrock_runtime.meta.region_name
+            account_id = os.getenv("AWS_ACCOUNT_ID")
+            if not account_id:
+                # Fallback: try to extract from role ARN if Lambda context available
+                # This shouldn't happen if Terraform is configured correctly
+                raise ValueError(
+                    "AWS_ACCOUNT_ID environment variable not set. Configure in Terraform "
+                    "or set LLM_MODEL_ID to override the default model."
+                )
+            # Legacy default: Claude Sonnet 4.5 inference profile
+            model_id = (
+                f"arn:aws:bedrock:{region}:{account_id}:inference-profile/"
+                "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
+            )
     
-    # Get account ID from environment variable (set by Terraform)
-    # Avoid calling STS (would require VPC endpoint)
-    import os
-    account_id = os.getenv('AWS_ACCOUNT_ID')
-    if not account_id:
-        # Fallback: try to extract from role ARN if Lambda context available
-        # This shouldn't happen if Terraform is configured correctly
-        raise ValueError("AWS_ACCOUNT_ID environment variable not set. Configure in Terraform.")
+    logger.debug(f"Invoking Bedrock model_id={model_id}")
     
-    # Use Claude Sonnet 4.5 - Excellent quality, fast, cost-effective
-    # Sonnet 4.5 provides excellent quality without the cost/speed tradeoffs of Opus
-    model_id = f"arn:aws:bedrock:{region}:{account_id}:inference-profile/us.anthropic.claude-sonnet-4-5-20250929-v1:0"
-    
-    # Retry logic for throttling (exponential backoff)
-    max_retries = 3
-    base_delay = 1.0  # Start with 1 second
+    # Retry logic for throttling (fixed interval with jitter)
+    max_retries = 20  # Allow many retries for throttling
+    retry_interval = 30.0  # Fixed 30 second interval (20-40s with jitter)
+    import random
     
     for attempt in range(max_retries + 1):
         try:
@@ -145,15 +195,101 @@ def invoke_claude(
                     'usage': {
                         'input_tokens': response_body.get('usage', {}).get('input_tokens', 0),
                         'output_tokens': response_body.get('usage', {}).get('output_tokens', 0)
-                    }
+                    },
+                    'model_used': model_id,  # Track which model was actually used
                 }
         
         except ClientError as e:
             error_code = e.response.get('Error', {}).get('Code', '')
+            error_message = str(e).lower()
             
-            # Handle throttling with exponential backoff
+            # Check if this is a daily token quota limit (not just rate limiting)
+            is_daily_token_limit = (
+                error_code == 'ThrottlingException' and
+                'too many tokens per day' in error_message
+            )
+            
+            # Publish CloudWatch metric for quota hits (always, even if fallback is disabled)
+            if is_daily_token_limit:
+                try:
+                    cloudwatch.put_metric_data(
+                        Namespace='DocProf/Custom',
+                        MetricData=[
+                            {
+                                'MetricName': 'BedrockDailyTokenQuotaHits',
+                                'Value': 1,
+                                'Unit': 'Count',
+                                'Dimensions': [
+                                    {
+                                        'Name': 'ModelId',
+                                        'Value': model_id.split('/')[-1] if '/' in model_id else model_id
+                                    }
+                                ]
+                            }
+                        ]
+                    )
+                    logger.error(
+                        f"🚨 DAILY TOKEN QUOTA LIMIT HIT for {model_id}. "
+                        f"CloudWatch alarm should trigger. Request quota increase immediately."
+                    )
+                except Exception as metric_error:
+                    # Don't fail the request if metric publishing fails
+                    logger.warning(f"Failed to publish quota metric: {metric_error}")
+            
+            # Publish metric for general throttling (rate limits)
+            if error_code == 'ThrottlingException':
+                try:
+                    cloudwatch.put_metric_data(
+                        Namespace='DocProf/Custom',
+                        MetricData=[
+                            {
+                                'MetricName': 'BedrockThrottlingExceptions',
+                                'Value': 1,
+                                'Unit': 'Count',
+                                'Dimensions': [
+                                    {
+                                        'Name': 'ModelId',
+                                        'Value': model_id.split('/')[-1] if '/' in model_id else model_id
+                                    },
+                                    {
+                                        'Name': 'QuotaType',
+                                        'Value': 'daily_token_limit' if is_daily_token_limit else 'rate_limit'
+                                    }
+                                ]
+                            }
+                        ]
+                    )
+                except Exception as metric_error:
+                    logger.warning(f"Failed to publish throttling metric: {metric_error}")
+            
+            # If we hit daily token limit and have a fallback model, switch to it immediately
+            # NOTE: Fallback is currently disabled - we alert instead
+            if is_daily_token_limit and FALLBACK_LLM_MODEL_ID_ENV and model_id != FALLBACK_LLM_MODEL_ID_ENV:
+                logger.warning(
+                    f"Daily token limit reached for {model_id}. "
+                    f"Switching to fallback model: {FALLBACK_LLM_MODEL_ID_ENV}"
+                )
+                # Recursively call with fallback model (only once to avoid infinite loops)
+                fallback_response = invoke_claude(
+                    messages=messages,
+                    system=system,
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                    stream=stream,
+                    model_id=FALLBACK_LLM_MODEL_ID_ENV,  # Use fallback explicitly
+                )
+                # Mark that we switched models
+                fallback_response['model_switched'] = True
+                fallback_response['primary_model'] = model_id
+                fallback_response['fallback_model'] = FALLBACK_LLM_MODEL_ID_ENV
+                return fallback_response
+            
+            # Handle throttling with fixed interval + jitter to spread out retries
             if error_code == 'ThrottlingException' and attempt < max_retries:
-                delay = base_delay * (2 ** attempt)  # Exponential backoff: 1s, 2s, 4s
+                # Add jitter (±10 seconds) to prevent synchronized retries and spread out load
+                # This gives 20-40 second delays between retries to avoid tight loops
+                jitter = random.uniform(-10.0, 10.0)
+                delay = max(1.0, retry_interval + jitter)  # Ensure at least 1 second
                 logger.warning(f"Bedrock throttling (attempt {attempt + 1}/{max_retries + 1}), retrying in {delay:.1f}s...")
                 time.sleep(delay)
                 continue

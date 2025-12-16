@@ -145,6 +145,11 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                         state = dict(new_state) if new_state else {}
                     else:
                         state = new_state
+                    # Verify toc_data is in state after TOC extraction
+                    if 'toc_data' not in state:
+                        logger.error(f"CRITICAL: toc_data missing after TOC extraction! State keys: {list(state.keys())}")
+                        return error_response("Internal error: Table of contents data not preserved after extraction", 500)
+                    logger.debug(f"TOC extracted: {len(state.get('toc_data', {}).get('chapters', []))} chapters")
                 else:
                     return error_response(f"TOC extraction failed: {toc_result.get('error')}", 500)
             
@@ -156,8 +161,7 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                     if state.get('toc_data') and state.get('current_chapter_index') is not None:
                         current_chapter = state['toc_data']['chapters'][state['current_chapter_index']]
                         result = handle_chapter_text_extracted(state, chapter_text, current_chapter)
-                        # generate_chapter_summary returns empty new_state, so preserve current state
-                        # Only update state if new_state is not empty
+                        # handle_chapter_text_extracted now preserves state including toc_data
                         new_state = result.new_state
                         if new_state and (isinstance(new_state, dict) and new_state):
                             if hasattr(new_state, 'model_dump'):
@@ -168,7 +172,7 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                                 state = dict(new_state) if new_state else state
                             else:
                                 state = new_state
-                        # Otherwise keep current state
+                        # Otherwise keep current state (shouldn't happen now, but safe)
                     else:
                         return error_response("No chapter available for text extraction result", 500)
                 else:
@@ -187,6 +191,12 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                     if task == 'repair_json':
                         # JSON repair response - try parsing again
                         logger.info("Received repaired JSON from LLM (temperature 0.0), attempting to parse...")
+                        # CRITICAL: When repair_json_with_llm returns, it has new_state={} (empty)
+                        # We must NOT update state from that result - preserve existing state!
+                        # The state should still have toc_data from before the repair was triggered
+                        if 'toc_data' not in state:
+                            logger.error(f"toc_data missing from state during JSON repair! State keys: {list(state.keys())}")
+                            return error_response("Internal error: Table of contents data lost during processing", 500)
                         result = handle_chapter_summary_generated(state, llm_content)
                         
                         # Check if repair was successful
@@ -223,6 +233,10 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                     elif task == 'generate_chapter_summary':
                         # Pass current state to handle_chapter_summary_generated
                         # It will update the state with the new chapter summary
+                        # Ensure toc_data is preserved in state
+                        if 'toc_data' not in state:
+                            logger.error(f"toc_data missing from state during chapter summary! State keys: {list(state.keys())}")
+                            return error_response("Internal error: Table of contents data lost during processing", 500)
                         result = handle_chapter_summary_generated(state, llm_content)
                         
                         # Check if there was an error (no commands and error message)
@@ -294,18 +308,27 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                             # If summary exists but has minimal fields, it might be from manual extraction
                             # We'll track this separately if needed
                         
-                        new_state = result.new_state
-                        if not isinstance(new_state, dict):
-                            if hasattr(new_state, 'model_dump'):
-                                state = new_state.model_dump()
-                            elif hasattr(new_state, 'dict'):
-                                state = new_state.dict()
-                            elif hasattr(new_state, '__dict__'):
-                                state = new_state.__dict__
-                            else:
-                                state = dict(new_state) if new_state else {}
+                        # CRITICAL: If result has commands (like repair_json), it means we're not done yet
+                        # and the new_state might be empty. We should preserve existing state in that case.
+                        if result.commands:
+                            # Result has commands (e.g., repair_json) - preserve state, don't update from empty new_state
+                            # The state will be updated later when the command completes
+                            logger.debug(f"Result has {len(result.commands)} command(s), preserving state")
+                            # Don't update state - continue loop to execute the command
                         else:
-                            state = new_state
+                            # No commands - update state from result
+                            new_state = result.new_state
+                            if not isinstance(new_state, dict):
+                                if hasattr(new_state, 'model_dump'):
+                                    state = new_state.model_dump()
+                                elif hasattr(new_state, 'dict'):
+                                    state = new_state.dict()
+                                elif hasattr(new_state, '__dict__'):
+                                    state = new_state.__dict__
+                                else:
+                                    state = dict(new_state) if new_state else {}
+                            else:
+                                state = new_state
                     elif task == 'extract_source_summary':
                         result = handle_source_summary_extracted(state, llm_content)
                         new_state = result.new_state

@@ -18,6 +18,7 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     delete_all = event.get('delete_all', False)
     book_id = event.get('book_id')
     delete_all_broken = event.get('delete_all_broken', False)
+    clean_source_summaries = event.get('clean_source_summaries', False)
     dry_run = event.get('dry_run', True)
     
     results = {
@@ -26,12 +27,74 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         'books_deleted': [],
         'chunks_deleted': 0,
         'figures_deleted': 0,
-        'chapters_deleted': 0
+        'chapters_deleted': 0,
+        'source_summaries_deleted': 0,
+        'source_summary_embeddings_deleted': 0
     }
     
     try:
         with get_db_connection() as conn:
             with conn.cursor() as cur:
+                # Handle clean_source_summaries option
+                if clean_source_summaries and book_id:
+                    if not dry_run:
+                        # Count before deletion (source_summaries uses book_id, not source_id)
+                        cur.execute("SELECT COUNT(*) FROM source_summaries WHERE book_id = %s", (book_id,))
+                        summary_count = cur.fetchone()[0]
+                        # Check if source_summary_embeddings table exists
+                        cur.execute("""
+                            SELECT EXISTS (
+                                SELECT FROM information_schema.tables 
+                                WHERE table_name = 'source_summary_embeddings'
+                            )
+                        """)
+                        embeddings_table_exists = cur.fetchone()[0]
+                        embedding_count = 0
+                        if embeddings_table_exists:
+                            cur.execute("SELECT COUNT(*) FROM source_summary_embeddings WHERE book_id = %s", (book_id,))
+                            embedding_count = cur.fetchone()[0]
+                        
+                        # Delete source_summaries and embeddings
+                        cur.execute("DELETE FROM source_summaries WHERE book_id = %s", (book_id,))
+                        if embeddings_table_exists:
+                            cur.execute("DELETE FROM source_summary_embeddings WHERE book_id = %s", (book_id,))
+                        
+                        conn.commit()
+                        
+                        results['source_summaries_deleted'] = summary_count
+                        results['source_summary_embeddings_deleted'] = embedding_count
+                        
+                        return {
+                            'statusCode': 200,
+                            'body': json.dumps({
+                                **results,
+                                'message': f'Deleted {summary_count} source_summaries and {embedding_count} embeddings for book_id: {book_id}'
+                            }, indent=2, default=str)
+                        }
+                    else:
+                        # Dry run
+                        cur.execute("SELECT COUNT(*) FROM source_summaries WHERE book_id = %s", (book_id,))
+                        summary_count = cur.fetchone()[0]
+                        cur.execute("""
+                            SELECT EXISTS (
+                                SELECT FROM information_schema.tables 
+                                WHERE table_name = 'source_summary_embeddings'
+                            )
+                        """)
+                        embeddings_table_exists = cur.fetchone()[0]
+                        embedding_count = 0
+                        if embeddings_table_exists:
+                            cur.execute("SELECT COUNT(*) FROM source_summary_embeddings WHERE book_id = %s", (book_id,))
+                            embedding_count = cur.fetchone()[0]
+                        
+                        return {
+                            'statusCode': 200,
+                            'body': json.dumps({
+                                **results,
+                                'message': f'DRY RUN: Would delete {summary_count} source_summaries and {embedding_count} embeddings for book_id: {book_id}'
+                            }, indent=2, default=str)
+                        }
+                
                 # Handle delete_all option
                 if delete_all:
                     if not dry_run:

@@ -1,0 +1,5 @@
+# Section Generation Status Handler Requirements
+# Uses shared modules, so minimal dependencies
+
+psycopg2-binary>=2.9.0
+boto3>=1.26.0

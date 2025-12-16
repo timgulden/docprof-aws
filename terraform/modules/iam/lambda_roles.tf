@@ -46,6 +46,30 @@ resource "aws_iam_role_policy" "lambda_cloudwatch_logs" {
   })
 }
 
+# Policy for CloudWatch Metrics (publish custom metrics for quota monitoring)
+resource "aws_iam_role_policy" "lambda_cloudwatch_metrics" {
+  name = "${var.project_name}-${var.environment}-lambda-cloudwatch-metrics"
+  role = aws_iam_role.lambda_execution.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "cloudwatch:PutMetricData"
+        ]
+        Resource = "*"
+        Condition = {
+          StringEquals = {
+            "cloudwatch:namespace" = "${var.project_name}/Custom"
+          }
+        }
+      }
+    ]
+  })
+}
+
 # Policy for VPC access (Lambda needs to be in VPC to access Aurora and VPC endpoints)
 resource "aws_iam_role_policy" "lambda_vpc" {
   name = "${var.project_name}-${var.environment}-lambda-vpc"
@@ -156,10 +180,16 @@ resource "aws_iam_role_policy" "lambda_bedrock" {
           "arn:aws:bedrock:us-east-1:${var.account_id}:inference-profile/us.anthropic.claude-sonnet-4-5-20250929-v1:0",
           "arn:aws:bedrock:us-east-2:${var.account_id}:inference-profile/us.anthropic.claude-sonnet-4-5-20250929-v1:0",
           "arn:aws:bedrock:us-west-2:${var.account_id}:inference-profile/us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+          # Claude 3.5 Sonnet 20240620 (fallback model)
+          "arn:aws:bedrock:us-east-1:${var.account_id}:inference-profile/us.anthropic.claude-3-5-sonnet-20240620-v1:0",
           # Foundation models (direct access) - inference profiles route to these
           "arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-sonnet-4-5-20250929-v1:0",
           "arn:aws:bedrock:us-east-2::foundation-model/anthropic.claude-sonnet-4-5-20250929-v1:0",
           "arn:aws:bedrock:us-west-2::foundation-model/anthropic.claude-sonnet-4-5-20250929-v1:0",
+          # Claude 3.5 Sonnet 20241022 (fallback model)
+          "arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-3-5-sonnet-20241022-v2:0",
+          # Claude 3.5 Sonnet 20240620 (fallback model - foundation model ARN)
+          "arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-3-5-sonnet-20240620-v1:0",
           # Embeddings
           "arn:aws:bedrock:${var.aws_region}::foundation-model/amazon.titan-embed-text-v1",
           "arn:aws:bedrock:${var.aws_region}::foundation-model/amazon.titan-embed-text-v2:0"
@@ -210,6 +240,8 @@ resource "aws_iam_role_policy" "lambda_marketplace" {
           # Claude 3.5 Sonnet (backup)
           "arn:aws:bedrock:us-east-1:${var.account_id}:inference-profile/us.anthropic.claude-3-5-sonnet-20240620-v1:0",
           "arn:aws:bedrock:us-west-2:${var.account_id}:inference-profile/us.anthropic.claude-3-5-sonnet-20240620-v1:0",
+          # Claude 3.5 Sonnet 20241022 (fallback model)
+          "arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-3-5-sonnet-20241022-v2:0",
           # Foundation models (direct access) - inference profiles route to these
           # Claude Opus 4.5 (highest quality, for figure descriptions)
           "arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-opus-4-5-20251101-v1:0",
@@ -283,7 +315,11 @@ resource "aws_iam_role_policy" "lambda_dynamodb" {
           "arn:aws:dynamodb:${var.aws_region}:${var.account_id}:table/${var.project_name}-${var.environment}-sessions",
           "arn:aws:dynamodb:${var.aws_region}:${var.account_id}:table/${var.project_name}-${var.environment}-sessions/*",
           "arn:aws:dynamodb:${var.aws_region}:${var.account_id}:table/${var.project_name}-${var.environment}-course-state",
-          "arn:aws:dynamodb:${var.aws_region}:${var.account_id}:table/${var.project_name}-${var.environment}-course-state/*"
+          "arn:aws:dynamodb:${var.aws_region}:${var.account_id}:table/${var.project_name}-${var.environment}-course-state/*",
+          "arn:aws:dynamodb:${var.aws_region}:${var.account_id}:table/${var.project_name}-${var.environment}-chapter-summaries",
+          "arn:aws:dynamodb:${var.aws_region}:${var.account_id}:table/${var.project_name}-${var.environment}-chapter-summaries/*",
+          "arn:aws:dynamodb:${var.aws_region}:${var.account_id}:table/${var.project_name}-${var.environment}-source-summary-state",
+          "arn:aws:dynamodb:${var.aws_region}:${var.account_id}:table/${var.project_name}-${var.environment}-source-summary-state/*"
         ]
       }
     ]

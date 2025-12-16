@@ -48,6 +48,16 @@ output "source_summary_stored_rule_name" {
   value       = aws_cloudwatch_event_rule.source_summary_stored.name
 }
 
+output "chapter_summary_requested_rule_name" {
+  description = "Name of the chapter_summary_requested event rule"
+  value       = aws_cloudwatch_event_rule.chapter_summary_requested.name
+}
+
+output "all_chapters_completed_rule_name" {
+  description = "Name of the all_chapters_completed event rule"
+  value       = aws_cloudwatch_event_rule.all_chapters_completed.name
+}
+
 output "dlq_arn" {
   description = "ARN of the dead letter queue for failed events"
   value       = aws_sqs_queue.course_events_dlq.arn

@@ -154,6 +154,27 @@ def create_schema(force: bool = False) -> Dict[str, Any]:
             conn.commit()
             logger.info("✓ course_sections table ensured")
             
+            # Always ensure section_deliveries table exists
+            logger.info("Ensuring section_deliveries table exists...")
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS section_deliveries (
+                    delivery_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                    section_id UUID NOT NULL REFERENCES course_sections(section_id) ON DELETE CASCADE,
+                    user_id UUID NOT NULL,
+                    lecture_script TEXT NOT NULL,
+                    delivered_at TIMESTAMP DEFAULT NOW(),
+                    duration_actual_minutes INTEGER,
+                    user_notes TEXT,
+                    style_snapshot JSONB DEFAULT '{}'::jsonb,
+                    created_at TIMESTAMP DEFAULT NOW()
+                );
+                
+                CREATE INDEX IF NOT EXISTS deliveries_section_idx ON section_deliveries(section_id);
+                CREATE INDEX IF NOT EXISTS deliveries_user_idx ON section_deliveries(user_id, section_id);
+            """)
+            conn.commit()
+            logger.info("✓ section_deliveries table ensured")
+            
             if tables_exist and not force:
                 return {
                     'status': 'skipped',

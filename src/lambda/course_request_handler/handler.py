@@ -23,6 +23,7 @@ from shared.command_executor import execute_command
 from shared.course_state_manager import save_course_state
 from shared.event_publisher import publish_course_requested_event, publish_embedding_generated_event
 from shared.response import success_response, error_response
+from shared.db_utils import get_db_connection
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -56,7 +57,8 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
             body = event.get('body', {})
         
         query = body.get('query')
-        hours = body.get('hours', 2.0)
+        # Support both 'hours' and 'time_hours' for compatibility
+        hours = body.get('hours') or body.get('time_hours', 2.0)
         preferences_dict = body.get('preferences', {})
         
         if not query:
@@ -102,15 +104,26 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                 save_course_state(course_id, current_state)
                 logger.info(f"Saved initial course state: {course_id}")
                 
+                # Save basic course record to PostgreSQL immediately so outline endpoint works
+                # Extract user_id from event (Cognito token)
+                user_id = extract_user_id(event)
+                if user_id:
+                    save_initial_course_record(course_id, user_id, query, hours, preferences_dict)
+                    logger.info(f"Saved initial course record to PostgreSQL: {course_id}")
+                
                 # Publish EmbeddingGeneratedEvent to EventBridge to continue async pipeline
                 publish_embedding_generated_event(course_id, embedding)
                 logger.info(f"Published EmbeddingGeneratedEvent for course: {course_id}")
                 
                 # Return immediately with course_id and status
+                # Frontend expects camelCase: courseId, title, message
                 return success_response({
-                    'course_id': course_id,
-                    'status': 'processing',
+                    'courseId': course_id,  # camelCase for frontend
+                    'course_id': course_id,  # Also include snake_case for backward compatibility
+                    'title': query[:100] if len(query) > 100 else query,  # Temporary title from query
                     'message': f'Course generation started. Poll /course-status/{course_id} for progress.',
+                    'status': 'processing',
+                    'pending': True,
                     'query': query,
                     'hours': hours,
                 })
@@ -123,11 +136,21 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
             logger.warning(f"Unexpected first command: {current_result.commands[0].command_name if current_result.commands else 'None'}")
             # Still save state and publish CourseRequestedEvent as fallback
             save_course_state(course_id, current_state)
+            
+            # Save basic course record to PostgreSQL immediately
+            user_id = extract_user_id(event)
+            if user_id:
+                save_initial_course_record(course_id, user_id, query, hours, preferences_dict)
+                logger.info(f"Saved initial course record to PostgreSQL (fallback): {course_id}")
+            
             publish_course_requested_event(course_id, query, float(hours), preferences_dict)
             return success_response({
-                'course_id': course_id,
-                'status': 'processing',
+                'courseId': course_id,  # camelCase for frontend
+                'course_id': course_id,  # Also include snake_case for backward compatibility
+                'title': query[:100] if len(query) > 100 else query,  # Temporary title from query
                 'message': 'Course generation started. Poll /courses/{course_id}/status for progress.',
+                'status': 'processing',
+                'pending': True,
                 'query': query,
                 'hours': hours,
             })
@@ -135,3 +158,54 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     except Exception as e:
         logger.error(f"Error in course request handler: {e}", exc_info=True)
         return error_response(f"Internal server error: {str(e)}", status_code=500)
+
+
+def extract_user_id(event: Dict[str, Any]) -> Optional[str]:
+    """Extract user_id from API Gateway event with Cognito authorizer."""
+    try:
+        request_context = event.get("requestContext", {})
+        authorizer = request_context.get("authorizer", {})
+        claims = authorizer.get("claims", {})
+        user_id = claims.get("sub")
+        if user_id:
+            logger.info(f"Extracted user_id from Cognito token: {user_id}")
+            return user_id
+        else:
+            logger.warning("No user_id found in Cognito claims")
+            return None
+    except Exception as e:
+        logger.error(f"Error extracting user_id: {e}", exc_info=True)
+        return None
+
+
+def save_initial_course_record(course_id: str, user_id: str, query: str, hours: float, preferences_dict: Dict[str, Any]) -> None:
+    """Save initial course record to PostgreSQL so outline endpoint works immediately."""
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                # Insert course with initial status
+                cur.execute(
+                    """
+                    INSERT INTO courses (
+                        course_id, user_id, title, original_query,
+                        estimated_hours, status, preferences, created_at, last_modified
+                    ) VALUES (
+                        %s::uuid, %s::uuid, %s, %s, %s, %s, %s::jsonb, NOW(), NOW()
+                    )
+                    ON CONFLICT (course_id) DO NOTHING
+                    """,
+                    (
+                        course_id,
+                        user_id,
+                        query[:200] if len(query) > 200 else query,  # Title from query
+                        query,
+                        float(hours),
+                        'active',  # Initial status (valid: 'active', 'completed', 'archived')
+                        json.dumps(preferences_dict) if preferences_dict else '{}',
+                    )
+                )
+                conn.commit()
+                logger.info(f"Saved initial course record: {course_id}")
+    except Exception as e:
+        logger.error(f"Failed to save initial course record: {e}", exc_info=True)
+        # Don't fail the request if this fails - course will be saved later in workflow

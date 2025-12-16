@@ -229,12 +229,20 @@ locals {
 }
 
 # Create parent resources dynamically (e.g., "ai-services", "books")
+# Note: If resources already exist, they should be imported into state first
 resource "aws_api_gateway_resource" "parent" {
   for_each = local.parent_segments
 
   rest_api_id = aws_api_gateway_rest_api.this.id
   parent_id   = aws_api_gateway_rest_api.this.root_resource_id
   path_part   = each.value
+}
+
+# Local value to get parent resource IDs (for use in other locals)
+locals {
+  parent_resource_ids = {
+    for k, v in aws_api_gateway_resource.parent : k => v.id
+  }
 }
 
 # Create final resource for each endpoint
@@ -307,22 +315,22 @@ locals {
   # Also create a lookup by parent resource ID for endpoints that need to check
   intermediate_by_parent_id = {
     for k, v in local.intermediate_resources :
-    "${aws_api_gateway_resource.parent[v.parent_segment].id}:${v.path_part}" => aws_api_gateway_resource.intermediate[k].id
+    "${local.parent_resource_ids[v.parent_segment]}:${v.path_part}" => aws_api_gateway_resource.intermediate[k].id
   }
   
   # Compute parent_id for each endpoint
   endpoint_parent_ids = {
     for k in keys(local.endpoints_needing_resources) :
     k => length(local.endpoint_paths[k]) > 2
-      ? (contains(keys(local.endpoint_to_intermediate), k) ? local.endpoint_to_intermediate[k] : aws_api_gateway_resource.parent[local.endpoint_paths[k][0]].id)
+      ? (contains(keys(local.endpoint_to_intermediate), k) ? local.endpoint_to_intermediate[k] : local.parent_resource_ids[local.endpoint_paths[k][0]])
       : (length(local.endpoint_paths[k]) > 1
         ? (
           # Check if an intermediate resource already exists for this path segment
           # For "books/{bookId}", check if "{bookId}" intermediate resource exists under "books"
           # Use string-based lookup first, then fall back to parent resource ID lookup
           length(local.endpoint_paths[k]) >= 2 && contains(keys(local.intermediate_by_path), "${local.endpoint_paths[k][0]}:${local.endpoint_paths[k][1]}")
-          ? local.intermediate_by_parent_id["${aws_api_gateway_resource.parent[local.endpoint_paths[k][0]].id}:${local.endpoint_paths[k][1]}"]
-          : aws_api_gateway_resource.parent[local.endpoint_paths[k][0]].id
+          ? local.intermediate_by_parent_id["${local.parent_resource_ids[local.endpoint_paths[k][0]]}:${local.endpoint_paths[k][1]}"]
+          : local.parent_resource_ids[local.endpoint_paths[k][0]]
         )
         : aws_api_gateway_rest_api.this.root_resource_id)
   }
@@ -363,7 +371,7 @@ locals {
     },
     {
       for k in keys(local.endpoints_using_parent) :
-      k => aws_api_gateway_resource.parent[local.endpoint_paths[k][0]].id
+      k => local.parent_resource_ids[local.endpoint_paths[k][0]]
       if contains(local.parent_segments, local.endpoint_paths[k][0])
     }
   )

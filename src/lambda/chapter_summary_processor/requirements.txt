@@ -1,0 +1,5 @@
+# Chapter Summary Processor Lambda
+# Processes a single chapter for source summary generation
+
+# Shared dependencies are in the Lambda layer
+# This file is for any chapter-specific dependencies if needed
