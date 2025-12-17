@@ -179,8 +179,10 @@ def execute_search_book_summaries_command(command: SearchBookSummariesCommand) -
     """
     Execute SearchBookSummariesCommand - search book summaries by embedding similarity.
     
-    Searches the source_summaries table using vector similarity to find relevant books
-    based on the user's query embedding.
+    UPDATED APPROACH: Instead of requiring a single book-level embedding (which hits
+    Titan's 8k token limit for large books), we search the chunks table and group by
+    book_id. This finds books that have relevant content chunks, which is more accurate
+    and doesn't require truncation.
     
     Returns books with their summary_json and similarity scores, ordered by relevance.
     """
@@ -188,36 +190,58 @@ def execute_search_book_summaries_command(command: SearchBookSummariesCommand) -
         from shared.db_utils import get_db_connection
         from psycopg2.extras import RealDictCursor
         
-        logger.info(f"Searching book summaries with top_k={command.top_k}, min_similarity={command.min_similarity}")
+        logger.info(f"Searching books via chunks with top_k={command.top_k}, min_similarity={command.min_similarity}")
+        logger.info(f"Query embedding length: {len(command.query_embedding) if command.query_embedding else 'None'}")
         
         with get_db_connection() as conn:
             with conn.cursor(cursor_factory=RealDictCursor) as cur:
-                # Search source_summaries table using vector similarity
-                # Get the latest version of each book's summary, then order by similarity
-                # Join with books table to get book title
+                # First, check if we have any chunks with embeddings at all
+                cur.execute("SELECT COUNT(*) as total, COUNT(embedding) as with_embedding FROM chunks")
+                chunk_stats = cur.fetchone()
+                logger.info(f"Database stats: {chunk_stats[0]} total chunks, {chunk_stats[1]} with embeddings")
+                
+                # NEW APPROACH: Search chunks, group by book, then join with source_summaries
+                # This avoids the token limit issue and is more accurate (searches actual content, not just summary)
+                logger.info(f"Executing chunk search query with min_similarity={command.min_similarity}")
                 cur.execute("""
-                    WITH latest_summaries AS (
-                        SELECT DISTINCT ON (book_id)
+                    WITH relevant_chunks AS (
+                        -- Find chunks that match the query (top 50 to ensure we sample from multiple books)
+                        SELECT 
                             book_id,
-                            summary_json,
-                            embedding,
-                            version,
-                            generated_at
-                        FROM source_summaries
+                            1 - (embedding <=> %s::vector) as similarity
+                        FROM chunks
                         WHERE embedding IS NOT NULL
-                        ORDER BY book_id, version DESC
+                          AND 1 - (embedding <=> %s::vector) >= %s
+                        ORDER BY embedding <=> %s::vector
+                        LIMIT 50
+                    ),
+                    book_relevance AS (
+                        -- Group by book and take the best similarity score per book
+                        SELECT 
+                            book_id,
+                            MAX(similarity) as max_similarity,
+                            COUNT(*) as matching_chunks
+                        FROM relevant_chunks
+                        GROUP BY book_id
                     )
                     SELECT 
-                        ls.book_id,
+                        br.book_id,
                         b.title as book_title,
-                        ls.summary_json,
-                        1 - (ls.embedding <=> %s::vector) as similarity,
-                        ls.version,
-                        ls.generated_at
-                    FROM latest_summaries ls
-                    INNER JOIN books b ON ls.book_id = b.book_id
-                    WHERE 1 - (ls.embedding <=> %s::vector) >= %s
-                    ORDER BY ls.embedding <=> %s::vector
+                        ss.summary_json,
+                        br.max_similarity as similarity,
+                        br.matching_chunks,
+                        ss.version,
+                        ss.generated_at
+                    FROM book_relevance br
+                    INNER JOIN books b ON br.book_id = b.book_id
+                    LEFT JOIN LATERAL (
+                        SELECT summary_json, version, generated_at
+                        FROM source_summaries
+                        WHERE book_id = br.book_id
+                        ORDER BY version DESC
+                        LIMIT 1
+                    ) ss ON true
+                    ORDER BY br.max_similarity DESC
                     LIMIT %s
                 """, (
                     command.query_embedding,
@@ -230,9 +254,28 @@ def execute_search_book_summaries_command(command: SearchBookSummariesCommand) -
                 results = cur.fetchall()
                 books = [dict(row) for row in results]
                 
-                logger.info(f"Found {len(books)} relevant books")
+                # Check how many chunks matched before grouping
+                cur.execute("""
+                    SELECT COUNT(*) as matching_count
+                    FROM chunks
+                    WHERE embedding IS NOT NULL
+                      AND 1 - (embedding <=> %s::vector) >= %s
+                """, (command.query_embedding, command.min_similarity))
+                matching_chunks_count = cur.fetchone()[0]
+                logger.info(f"Found {matching_chunks_count} chunks matching threshold (before grouping)")
+                
+                logger.info(f"Found {len(books)} relevant books (via chunk search)")
+                if len(books) == 0:
+                    logger.warning(f"No books found! This could mean:")
+                    logger.warning(f"  1. No chunks have embeddings (checked: {chunk_stats[1]} chunks have embeddings)")
+                    logger.warning(f"  2. Similarity threshold {command.min_similarity} is too high ({matching_chunks_count} chunks matched)")
+                    logger.warning(f"  3. Query embedding doesn't match any content")
                 for book in books:
-                    logger.info(f"  - {book.get('book_title', 'Unknown')} (similarity: {book.get('similarity', 0):.3f})")
+                    logger.info(
+                        f"  - {book.get('book_title', 'Unknown')} "
+                        f"(similarity: {book.get('similarity', 0):.3f}, "
+                        f"{book.get('matching_chunks', 0)} matching chunks)"
+                    )
                 
                 return {
                     'status': 'success',
@@ -426,13 +469,20 @@ def execute_create_sections_command(command: CreateSectionsCommand) -> Dict[str,
     try:
         sections = command.sections
         
+        logger.info(f"execute_create_sections_command: Starting execution with {len(sections)} sections")
         if not sections:
-            logger.warning("CreateSectionsCommand called with empty sections list")
+            logger.error("CRITICAL: CreateSectionsCommand called with empty sections list!")
             return {
-                'status': 'success',
+                'status': 'error',
+                'error': 'Empty sections list - no sections to store',
                 'sections_count': 0,
                 'sections': [],
             }
+        
+        if sections:
+            logger.info(f"execute_create_sections_command: First section: course_id={sections[0].course_id}, title='{sections[0].title[:50]}', order_index={sections[0].order_index}")
+            logger.info(f"execute_create_sections_command: Last section: course_id={sections[-1].course_id}, title='{sections[-1].title[:50]}', order_index={sections[-1].order_index}")
+            logger.info(f"execute_create_sections_command: Total sections: {len(sections)}, Total estimated minutes: {sum(s.estimated_minutes for s in sections)}")
         
         # Prepare batch insert data
         values = []
@@ -481,6 +531,7 @@ def execute_create_sections_command(command: CreateSectionsCommand) -> Dict[str,
                             serialized_tuple.append(val)
                     serialized_values.append(tuple(serialized_tuple))
                 
+                logger.info(f"execute_create_sections_command: Executing batch insert of {len(values)} sections")
                 execute_values(
                     cur,
                     """
@@ -510,8 +561,19 @@ def execute_create_sections_command(command: CreateSectionsCommand) -> Dict[str,
                         %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
                     )"""
                 )
+                
+                # Verify sections were actually inserted
+                cur.execute(
+                    "SELECT COUNT(*) FROM course_sections WHERE course_id = %s::uuid",
+                    (sections[0].course_id,)
+                )
+                stored_count = cur.fetchone()[0]
+                logger.info(f"execute_create_sections_command: Verified {stored_count} sections in database for course {sections[0].course_id}")
+                
+                if stored_count == 0:
+                    logger.error(f"CRITICAL: No sections found in database after insert! Expected {len(sections)} sections.")
         
-        logger.info(f"Stored {len(sections)} sections successfully for course {sections[0].course_id}")
+        logger.info(f"execute_create_sections_command: Successfully stored {len(sections)} sections for course {sections[0].course_id}")
         
         return {
             'status': 'success',

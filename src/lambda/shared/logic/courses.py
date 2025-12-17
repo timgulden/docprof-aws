@@ -487,17 +487,25 @@ def check_and_review_outline(
     """
     Check if outline needs review/adjustment (Phase N+1).
     """
+    logger.info(f"check_and_review_outline: Starting review check")
+    logger.info(f"check_and_review_outline: Outline text length: {len(state.outline_text or '')}")
+    
     # Parse outline to calculate total time
     total_minutes = parse_outline_total_time(state.outline_text or "")
     target_minutes = int((state.pending_course_hours or 2.0) * 60)
     
+    logger.info(f"check_and_review_outline: Total minutes from outline: {total_minutes}, Target: {target_minutes}")
+    
     variance = abs(total_minutes - target_minutes) / target_minutes if target_minutes > 0 else 1.0
+    logger.info(f"check_and_review_outline: Time variance: {variance:.2%} (threshold: 5%)")
     
     if variance > 0.05:  # More than 5% off
         # Need review
+        logger.info(f"check_and_review_outline: Variance > 5%, triggering review and adjustment")
         return review_and_adjust_outline(state, total_minutes, target_minutes)
     else:
         # Close enough, parse and store
+        logger.info(f"check_and_review_outline: Variance <= 5%, proceeding directly to parse and store")
         return parse_text_outline_to_database(state)
 
 
@@ -601,17 +609,63 @@ def parse_text_outline_to_database(
 ) -> LogicResult:
     """
     Parse complete text outline into database structure and store.
+    
+    Uses existing course_id from state.session_id and retrieves user_id from database.
     """
     import re
     import json
     from uuid import uuid4
     
     outline_text = state.outline_text or ""
+    logger.info(f"parse_text_outline_to_database: Starting parse. Outline text length: {len(outline_text)}")
     if not outline_text:
+        logger.error("parse_text_outline_to_database: No outline text in state!")
         return LogicResult(
             new_state=state,
             commands=[],
             ui_message="Error: No outline to parse.",
+        )
+    
+    # Log first 500 chars for debugging
+    logger.info(f"parse_text_outline_to_database: Outline preview (first 500 chars): {outline_text[:500]}")
+    
+    # Get existing course_id from state
+    existing_course_id = state.session_id
+    logger.info(f"parse_text_outline_to_database: Using course_id from state.session_id: {existing_course_id}")
+    if not existing_course_id:
+        logger.warning("No course_id in state.session_id, generating new one")
+        existing_course_id = str(uuid4())
+    
+    # Get user_id from existing course record in database
+    # We need to query it since state.session_id is course_id, not user_id
+    # NOTE: This is a side effect in a logic function, but necessary to get user_id
+    # In a pure FP design, this would be passed through state or as a command parameter
+    from shared.db_utils import get_db_connection
+    existing_user_id = None
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT user_id FROM courses WHERE course_id = %s::uuid",
+                    (existing_course_id,)
+                )
+                row = cur.fetchone()
+                if row:
+                    existing_user_id = str(row[0])
+                    logger.info(f"Retrieved user_id {existing_user_id} for course {existing_course_id}")
+                else:
+                    logger.warning(f"Course {existing_course_id} not found in database, using fallback")
+                    existing_user_id = str(uuid4())  # Fallback - shouldn't happen
+    except Exception as e:
+        logger.error(f"Failed to query existing course for user_id: {e}", exc_info=True)
+        existing_user_id = str(uuid4())  # Fallback
+    
+    if not existing_user_id:
+        logger.error("Could not determine user_id, cannot create course")
+        return LogicResult(
+            new_state=state,
+            commands=[],
+            ui_message="Error: Could not determine user for course.",
         )
     
     # If this is a revision, convert to JSON and use store_course_outline which handles revisions
@@ -855,6 +909,32 @@ def parse_text_outline_to_database(
             "sections": current_sections,
         })
     
+    total_sections = sum(len(p.get('sections', [])) for p in parts)
+    logger.info(f"parse_text_outline_to_database: Parsed outline: found {len(parts)} parts with {total_sections} total sections")
+    
+    # Log details about each part
+    for i, part in enumerate(parts):
+        section_count = len(part.get('sections', []))
+        logger.info(f"parse_text_outline_to_database: Part {i+1}: '{part.get('title', 'Untitled')}' with {section_count} sections")
+        if section_count > 0:
+            logger.debug(f"parse_text_outline_to_database:   First section: '{part['sections'][0].get('title', 'Untitled')}' ({part['sections'][0].get('time_minutes', 0)} min)")
+    
+    if not parts:
+        logger.error(f"CRITICAL: No parts found in outline_text (length: {len(outline_text)}). First 500 chars: {outline_text[:500]}")
+        return LogicResult(
+            new_state=state,
+            commands=[],
+            ui_message="Error: Could not parse course outline. No parts found.",
+        )
+    if total_sections == 0:
+        logger.error(f"CRITICAL: Parts found but no sections! Parts: {parts}")
+        logger.error(f"CRITICAL: Outline text sample (lines 1-50):\n{chr(10).join(outline_text.split(chr(10))[:50])}")
+        return LogicResult(
+            new_state=state,
+            commands=[],
+            ui_message="Error: Could not parse course sections from outline.",
+        )
+    
     # If no parts structure found, try to parse as flat sections
     if not parts:
         # Look for sections without part headers
@@ -907,8 +987,10 @@ def parse_text_outline_to_database(
     if prefs is None:
         prefs = CoursePreferences()
     
+    # Use existing course_id and user_id (course already exists in PostgreSQL)
     course = Course(
-        user_id=state.session_id or str(uuid4()),
+        course_id=existing_course_id,  # Use existing course_id
+        user_id=existing_user_id,  # Use existing user_id from database
         title=course_title,
         original_query=query,
         estimated_hours=state.pending_course_hours or 2.0,
@@ -919,6 +1001,7 @@ def parse_text_outline_to_database(
     all_sections = []
     section_order = 1
     
+    logger.info(f"Creating {len(parts)} parts as sections")
     for part_idx, part in enumerate(parts):
         # Create part as top-level section
         part_section = CourseSection(
@@ -963,17 +1046,42 @@ def parse_text_outline_to_database(
         }
     )
     
+    logger.info(f"parse_text_outline_to_database: Created {len(all_sections)} sections for course {course.course_id}")
+    logger.info(f"parse_text_outline_to_database: Course title: '{course.title}'")
+    logger.info(f"parse_text_outline_to_database: Course user_id: {course.user_id}")
+    
+    if len(all_sections) == 0:
+        logger.error(f"CRITICAL: No sections created! Parts: {len(parts)}, Outline text length: {len(outline_text)}")
+        logger.error(f"CRITICAL: Parts structure: {json.dumps([{'title': p.get('title'), 'sections_count': len(p.get('sections', []))} for p in parts], indent=2)}")
+        return LogicResult(
+            new_state=state,
+            commands=[],
+            ui_message="Error: No sections could be created from parsed outline.",
+        )
+    
+    # Log section details for debugging
+    logger.info(f"parse_text_outline_to_database: Section breakdown:")
+    for i, section in enumerate(all_sections[:5]):  # Log first 5 sections
+        logger.info(f"  Section {i+1}: order={section.order_index}, title='{section.title[:50]}', parent={section.parent_section_id}, minutes={section.estimated_minutes}")
+    if len(all_sections) > 5:
+        logger.info(f"  ... and {len(all_sections) - 5} more sections")
+    
+    commands = [
+        CreateCourseCommand(course=course),
+        CreateSectionsCommand(sections=all_sections),
+        RecordCourseHistoryCommand(
+            course_id=course.course_id,
+            change_type="created",
+            change_description="Course created with multi-phase outline generation",
+        ),
+    ]
+    
+    logger.info(f"parse_text_outline_to_database: Returning {len(commands)} commands: {[type(c).__name__ for c in commands]}")
+    logger.info(f"parse_text_outline_to_database: CreateSectionsCommand contains {len(all_sections)} sections")
+    
     return LogicResult(
         new_state=new_state,
-        commands=[
-            CreateCourseCommand(course=course),
-            CreateSectionsCommand(sections=all_sections),
-            RecordCourseHistoryCommand(
-                course_id=course.course_id,
-                change_type="created",
-                change_description="Course created with multi-phase outline generation",
-            ),
-        ],
+        commands=commands,
         ui_message="Course outline generated and stored!",
     )
 

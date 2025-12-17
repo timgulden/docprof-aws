@@ -56,6 +56,10 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         
         # Create event and process through logic layer
         course_event = AllPartsCompleteEvent()
+        logger.info(f"Outline reviewer: Processing AllPartsCompleteEvent for course {course_id}")
+        logger.info(f"Outline reviewer: State has outline_text length: {len(state.outline_text or '')}")
+        logger.info(f"Outline reviewer: State has parts_list: {len(state.parts_list or [])} parts")
+        
         result = reduce_course_event(state, course_event)
         
         # Execute commands
@@ -65,8 +69,17 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         
         from shared.core.commands import CreateCourseCommand, CreateSectionsCommand
         
-        for command in result.commands:
+        logger.info(f"Outline reviewer: Logic returned {len(result.commands)} commands")
+        logger.info(f"Outline reviewer: Command types: {[type(c).__name__ for c in result.commands]}")
+        
+        if len(result.commands) == 0:
+            logger.error(f"CRITICAL: No commands returned from reduce_course_event! This means course won't be stored.")
+            publish_course_error_event(course_id, "No commands returned from outline review - course storage failed")
+            return {'statusCode': 500, 'body': json.dumps({'error': 'No commands returned from logic layer'})}
+        for idx, command in enumerate(result.commands):
+            logger.info(f"Executing command {idx+1}/{len(result.commands)}: {type(command).__name__}")
             command_result = execute_command(command, result.new_state)
+            logger.info(f"Command {idx+1} result: status={command_result.get('status')}, sections_count={command_result.get('sections_count', 'N/A')}")
             
             if isinstance(command, LLMCommand):
                 needs_review = True
@@ -78,13 +91,39 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                     publish_course_error_event(course_id, f"Outline review failed: {error_msg}")
                     return {'statusCode': 500, 'body': json.dumps({'error': error_msg})}
             
-            elif isinstance(command, (CreateCourseCommand, CreateSectionsCommand)):
-                # No review needed - storage commands already executed
+            elif isinstance(command, CreateCourseCommand):
+                # Course storage
+                stored_course_id = command_result.get('course_id')
+                logger.info(f"CreateCourseCommand execution result: status={command_result.get('status')}, course_id={stored_course_id}")
+                logger.info(f"CreateCourseCommand course title: '{command.course.title}'")
+                
                 if command_result.get('status') != 'success':
                     error_msg = command_result.get('error', 'Unknown error')
-                    logger.error(f"Course storage failed: {error_msg}")
+                    logger.error(f"CreateCourseCommand failed: {error_msg}")
                     publish_course_error_event(course_id, f"Course storage failed: {error_msg}")
                     return {'statusCode': 500, 'body': json.dumps({'error': error_msg})}
+                else:
+                    logger.info(f"CreateCourseCommand succeeded: course_id={stored_course_id}, title='{command.course.title}'")
+            
+            elif isinstance(command, CreateSectionsCommand):
+                # Sections storage
+                sections_count = command_result.get('sections_count', 0)
+                logger.info(f"CreateSectionsCommand execution result: status={command_result.get('status')}, sections_count={sections_count}")
+                
+                if command_result.get('status') != 'success':
+                    error_msg = command_result.get('error', 'Unknown error')
+                    logger.error(f"CreateSectionsCommand failed: {error_msg}")
+                    logger.error(f"CreateSectionsCommand command had {len(command.sections)} sections to store")
+                    publish_course_error_event(course_id, f"Sections storage failed: {error_msg}")
+                    return {'statusCode': 500, 'body': json.dumps({'error': error_msg})}
+                else:
+                    logger.info(f"CreateSectionsCommand succeeded: stored {sections_count} sections")
+                    if sections_count == 0:
+                        logger.error(f"CRITICAL: CreateSectionsCommand succeeded but stored 0 sections!")
+                        logger.error(f"CRITICAL: Command had {len(command.sections)} sections in the command object")
+                        # Don't fail here - let it continue, but log the issue
+                    else:
+                        logger.info(f"SUCCESS: {sections_count} sections stored in database for course {course_id}")
         
         # Save updated state
         save_course_state(course_id, result.new_state)
