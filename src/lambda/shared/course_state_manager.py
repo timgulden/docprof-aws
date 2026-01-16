@@ -76,8 +76,17 @@ def course_state_to_dict(state: CourseState) -> Dict[str, Any]:
     }
     
     # Convert float to Decimal for DynamoDB compatibility
-    if result.get('pending_course_hours') is not None and isinstance(result['pending_course_hours'], float):
-        result['pending_course_hours'] = Decimal(str(result['pending_course_hours']))
+    # Note: model_dump(mode='json') may serialize floats as strings, so handle both
+    if result.get('pending_course_hours') is not None:
+        hours_value = result['pending_course_hours']
+        if isinstance(hours_value, (float, int)):
+            result['pending_course_hours'] = Decimal(str(hours_value))
+        elif isinstance(hours_value, str):
+            try:
+                result['pending_course_hours'] = Decimal(hours_value)
+            except (ValueError, TypeError):
+                logger.warning(f"Could not convert pending_course_hours string to Decimal: {hours_value}")
+                result['pending_course_hours'] = Decimal('2.0')  # Fallback
     
     # Handle float fields in nested models
     if result.get('current_course') and isinstance(result['current_course'], dict):
@@ -147,10 +156,18 @@ def dict_to_course_state(state_dict: Dict[str, Any]) -> CourseState:
     state_dict.pop('created_at', None)  # Will use model default
     state_dict.pop('updated_at', None)  # Will use model default
     
-    # Convert Decimal back to float for Pydantic compatibility
+    # Convert Decimal/String back to float for Pydantic compatibility
+    # Handle string case for backwards compatibility (old data may be stored as string)
     if state_dict.get('pending_course_hours') is not None:
-        if isinstance(state_dict['pending_course_hours'], Decimal):
-            state_dict['pending_course_hours'] = float(state_dict['pending_course_hours'])
+        hours_value = state_dict['pending_course_hours']
+        if isinstance(hours_value, Decimal):
+            state_dict['pending_course_hours'] = float(hours_value)
+        elif isinstance(hours_value, str):
+            try:
+                state_dict['pending_course_hours'] = float(hours_value)
+            except (ValueError, TypeError):
+                logger.warning(f"Could not convert pending_course_hours string to float: {hours_value}, using default 2.0")
+                state_dict['pending_course_hours'] = 2.0
     
     # Handle Decimal in nested models
     if state_dict.get('current_course') and isinstance(state_dict['current_course'], dict):

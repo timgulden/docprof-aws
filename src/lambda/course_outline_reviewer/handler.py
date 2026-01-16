@@ -54,6 +54,11 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
             publish_course_error_event(course_id, f"Course state not found: {course_id}")
             return {'statusCode': 404, 'body': json.dumps({'error': 'Course state not found'})}
         
+        # Log critical state values for debugging time issue
+        logger.info(f"Outline reviewer: Loaded state from DynamoDB")
+        logger.info(f"Outline reviewer: state.pending_course_hours = {state.pending_course_hours}")
+        logger.info(f"Outline reviewer: state.pending_course_query = {state.pending_course_query[:100] if state.pending_course_query else 'None'}")
+        
         # Create event and process through logic layer
         course_event = AllPartsCompleteEvent()
         logger.info(f"Outline reviewer: Processing AllPartsCompleteEvent for course {course_id}")

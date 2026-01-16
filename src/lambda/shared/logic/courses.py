@@ -489,12 +489,15 @@ def check_and_review_outline(
     """
     logger.info(f"check_and_review_outline: Starting review check")
     logger.info(f"check_and_review_outline: Outline text length: {len(state.outline_text or '')}")
+    logger.info(f"check_and_review_outline: state.pending_course_hours = {state.pending_course_hours}")
+    logger.info(f"check_and_review_outline: state.pending_course_query = {state.pending_course_query[:100] if state.pending_course_query else 'None'}")
     
     # Parse outline to calculate total time
     total_minutes = parse_outline_total_time(state.outline_text or "")
     target_minutes = int((state.pending_course_hours or 2.0) * 60)
     
     logger.info(f"check_and_review_outline: Total minutes from outline: {total_minutes}, Target: {target_minutes}")
+    logger.info(f"check_and_review_outline: Using hours value: {state.pending_course_hours or 2.0} (from state.pending_course_hours)")
     
     variance = abs(total_minutes - target_minutes) / target_minutes if target_minutes > 0 else 1.0
     logger.info(f"check_and_review_outline: Time variance: {variance:.2%} (threshold: 5%)")
@@ -555,6 +558,11 @@ def review_and_adjust_outline(
     
     query = state.pending_course_query or ""
     hours = state.pending_course_hours or 2.0
+    
+    logger.info(f"review_and_adjust_outline: state.pending_course_hours = {state.pending_course_hours}")
+    logger.info(f"review_and_adjust_outline: Using hours = {hours}")
+    logger.info(f"review_and_adjust_outline: current_total = {current_total}, target_total = {target_total}")
+    
     variance_percent = abs(current_total - target_total) / target_total * 100 if target_total > 0 else 0
     
     # Get book summaries from state
