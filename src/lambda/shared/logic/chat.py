@@ -244,10 +244,17 @@ def expand_query_for_retrieval(
             query_with_history = f"{query} {conversation_context}"
             logger.debug(f"Included last Q&A pair in query for better retrieval")
     
-    # Normalize common term variations
-    normalized = query_with_history.lower()
+    # IMPORTANT: Do NOT lowercase the query for embedding search!
+    # Bedrock Titan embeddings are case-sensitive, and the chunks in the database
+    # were embedded with their original case. Lowercasing the query produces
+    # a completely different embedding that doesn't match well.
+    # 
+    # We only apply term normalization (DCF, ROIC, etc.) using case-insensitive
+    # replacement to preserve the rest of the query's original case.
+    normalized = query_with_history  # Keep original case!
     
-    # Fix common variations
+    # Fix common variations (case-insensitive replacement)
+    # These map verbose terms to their common abbreviations
     variations = {
         "good will": "goodwill",
         "good-will": "goodwill",
@@ -259,7 +266,8 @@ def expand_query_for_retrieval(
     }
     
     for variant, standard in variations.items():
-        normalized = normalized.replace(variant, standard)
+        # Case-insensitive replacement (re is already imported at top of file)
+        normalized = re.sub(re.escape(variant), standard, normalized, flags=re.IGNORECASE)
     
     # Extract figure information from session context if available
     figure_keywords = []
@@ -279,7 +287,8 @@ def expand_query_for_retrieval(
             # If query mentions "figure" or "chart" or "diagram", add figure keywords
             # Also check for queries about "this figure", "the figure", "how does this relate", etc.
             figure_related_terms = ["figure", "chart", "diagram", "exhibit", "table", "this", "the", "relate", "relates", "relating"]
-            if any(word in normalized for word in figure_related_terms):
+            normalized_lower = normalized.lower()  # Lowercase for comparison only
+            if any(word in normalized_lower for word in figure_related_terms):
                 # Add captions (often contain key terms)
                 figure_keywords.extend(caption_matches)
                 # Add first 50 chars of descriptions (to avoid too much text)
@@ -295,11 +304,12 @@ def expand_query_for_retrieval(
         key_terms = []
         for i in range(len(words) - 1):
             bigram = f"{words[i]} {words[i+1]}"
-            # Common valuation/finance terms
-            if any(term in bigram for term in ["valuation", "value", "cash flow", "discount", 
+            bigram_lower = bigram.lower()  # Lowercase for comparison only
+            # Common valuation/finance terms (compare case-insensitively)
+            if any(term in bigram_lower for term in ["valuation", "value", "cash flow", "discount", 
                                                "return", "capital", "equity", "debt", "acquisition",
                                                "merger", "goodwill", "intangible", "asset", "liability"]):
-                key_terms.append(bigram)
+                key_terms.append(bigram)  # Keep original case for embedding
         
         if key_terms:
             # Combine original with key terms for better matching

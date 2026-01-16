@@ -47,6 +47,77 @@ logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
 
+def test_embedding_models(test_query: str = "What is M&A?") -> Dict[str, Any]:
+    """Test function to compare database embeddings with current model."""
+    logger.info(f"=== EMBEDDING MODEL TEST ===")
+    logger.info(f"Test query: '{test_query}'")
+    
+    # Generate Bedrock Titan embedding
+    logger.info("Generating Bedrock Titan embedding...")
+    embeddings = generate_embeddings([test_query], normalize=True)
+    bedrock_embedding = embeddings[0]
+    logger.info(f"Generated {len(bedrock_embedding)}-dimensional embedding")
+    
+    # Search database
+    logger.info("Searching database with Bedrock Titan embedding...")
+    results = vector_similarity_search(
+        query_embedding=bedrock_embedding,
+        chunk_types=["2page"],
+        book_ids=None,
+        limit=10,
+        similarity_threshold=None  # Get top 10 regardless of threshold
+    )
+    
+    logger.info(f"Found {len(results)} results")
+    
+    if results:
+        similarities = [r.get('similarity', 0) for r in results]
+        best_sim = max(similarities)
+        avg_sim = sum(similarities) / len(similarities)
+        worst_sim = min(similarities)
+        
+        logger.info(f"Similarity scores:")
+        logger.info(f"  Best:  {best_sim:.4f}")
+        logger.info(f"  Avg:   {avg_sim:.4f}")
+        logger.info(f"  Worst: {worst_sim:.4f}")
+        
+        logger.info(f"\nTop 3 results:")
+        for i, result in enumerate(results[:3], 1):
+            logger.info(f"  {i}. Similarity: {result.get('similarity', 0):.4f}")
+            logger.info(f"     Book ID: {result.get('book_id', 'unknown')}")
+            logger.info(f"     Content: {result.get('content', '')[:150]}...")
+        
+        # Interpretation
+        logger.info(f"\n=== ANALYSIS ===")
+        if best_sim > 0.5:
+            logger.info(f"✅ GOOD similarity ({best_sim:.4f}) - embeddings likely match!")
+            logger.info("   Database chunks probably have BEDROCK TITAN embeddings")
+        elif best_sim > 0.3:
+            logger.info(f"⚠️  MODERATE similarity ({best_sim:.4f}) - possible partial match")
+            logger.info("   May need investigation")
+        else:
+            logger.info(f"❌ POOR similarity ({best_sim:.4f}) - embeddings likely DON'T match!")
+            logger.info("   Database chunks probably have DIFFERENT embeddings (OpenAI?)")
+        
+        return {
+            'test_query': test_query,
+            'embedding_model': 'Bedrock Titan (amazon.titan-embed-text-v1)',
+            'results_count': len(results),
+            'best_similarity': best_sim,
+            'avg_similarity': avg_sim,
+            'worst_similarity': worst_sim,
+            'top_3_content': [r.get('content', '')[:200] for r in results[:3]]
+        }
+    else:
+        logger.warning("No results found!")
+        return {
+            'test_query': test_query,
+            'embedding_model': 'Bedrock Titan',
+            'results_count': 0,
+            'error': 'No results found'
+        }
+
+
 def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     """
     Lambda handler for chat messages.
@@ -64,6 +135,11 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     }
     """
     try:
+        # Check for test mode
+        if event.get('test_embeddings'):
+            test_result = test_embedding_models(event.get('test_query', 'What is M&A?'))
+            return success_response(test_result)
+        
         # Parse request body
         if isinstance(event.get('body'), str):
             body = json.loads(event['body'])
@@ -82,7 +158,12 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         if session_id:
             session = get_session(session_id)
             if not session:
-                return error_response(f"Session not found: {session_id}", 404)
+                logger.warning(f"Session {session_id} not found in DynamoDB, creating new session")
+                # Session not found - might be corrupted or deleted
+                # Create a new session instead of returning 404
+                session = create_session()
+                session_id = session['session_id']
+                logger.info(f"Created new session {session_id} to replace missing session")
         else:
             session = create_session()
             session_id = session['session_id']
@@ -120,6 +201,31 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         
         # Step 3: Vector search
         logger.info("Performing vector search...")
+        
+        # DEBUG: Check what's actually in the database
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                # Check total chunks
+                cur.execute("SELECT COUNT(*) FROM chunks")
+                total_chunks = cur.fetchone()[0]
+                logger.info(f"DEBUG: Total chunks in database: {total_chunks}")
+                
+                # Check chunks with embeddings
+                cur.execute("SELECT COUNT(*) FROM chunks WHERE embedding IS NOT NULL")
+                chunks_with_embeddings = cur.fetchone()[0]
+                logger.info(f"DEBUG: Chunks with embeddings: {chunks_with_embeddings}")
+                
+                # Check chunk types
+                cur.execute("SELECT chunk_type, COUNT(*) FROM chunks GROUP BY chunk_type")
+                chunk_type_counts = cur.fetchall()
+                for chunk_type, count in chunk_type_counts:
+                    logger.info(f"DEBUG: Chunk type '{chunk_type}': {count} chunks")
+                
+                # Check if 2page chunks have embeddings
+                cur.execute("SELECT COUNT(*) FROM chunks WHERE chunk_type = '2page' AND embedding IS NOT NULL")
+                twopage_with_embeddings = cur.fetchone()[0]
+                logger.info(f"DEBUG: '2page' chunks with embeddings: {twopage_with_embeddings}")
+        
         chunk_types = ["2page"]  # Use 2-page chunks for better citation accuracy
         
         # Use selected book_ids (from session or request) to filter search
@@ -130,37 +236,20 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         else:
             logger.info("No book_ids selected, searching across all books")
         
-        # Vector search strategy:
-        # 1. Try with threshold to get high-quality results first
-        # 2. If we don't get at least 10 results, lower threshold or remove it
-        # 3. Always return top 10 hits (or as many as available)
-        # 
-        # Note: MAExpert used OpenAI embeddings (different model), so thresholds may differ.
-        # For Titan embeddings, we'll be more permissive and ensure we get results.
-        search_results = None
-        target_limit = 10  # User wants at least top 10 hits
+        # Vector search strategy - match MAExpert configuration:
+        # - Fixed 0.35 similarity threshold (cast wider net, let LLM filter)
+        # - Top 12 results to give Claude more material to work with
+        # - Lower threshold allows more context while LLM filters irrelevant content
+        logger.info(f"Performing vector search with threshold=0.35, limit=12 (MAExpert-compatible)")
+        search_results = vector_similarity_search(
+            query_embedding=query_embedding,
+            chunk_types=chunk_types,
+            book_ids=search_book_ids,  # Pass all selected book_ids (or None for all books)
+            limit=12,  # Match MAExpert's top_k
+            similarity_threshold=0.35  # Match MAExpert's threshold
+        )
         
-        # Start with moderate threshold, progressively lower if needed
-        thresholds = [0.6, 0.5, 0.4, 0.3, 0.2, 0.0]  # 0.0 = no threshold, just top K
-        
-        for threshold in thresholds:
-            logger.info(f"Trying vector search with threshold={threshold}, limit={target_limit}")
-            search_results = vector_similarity_search(
-                query_embedding=query_embedding,
-                chunk_types=chunk_types,
-                book_ids=search_book_ids,  # Pass all selected book_ids (or None for all books)
-                limit=target_limit,
-                similarity_threshold=threshold if threshold > 0 else None  # None = no threshold filter
-            )
-            
-            if search_results and len(search_results) >= target_limit:
-                logger.info(f"Found {len(search_results)} results with threshold={threshold}")
-                break
-            elif search_results:
-                logger.info(f"Found {len(search_results)} results with threshold={threshold} (less than target {target_limit})")
-                # Continue to try lower thresholds to get more results
-                if len(search_results) >= 5:  # If we have at least 5, might be good enough
-                    break
+        logger.info(f"Vector search returned {len(search_results) if search_results else 0} results")
         
         if not search_results:
             logger.warning(f"No chunks found for query after trying all thresholds")
