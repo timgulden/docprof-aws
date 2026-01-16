@@ -305,7 +305,9 @@ Create a {estimated_minutes}-minute lecture that:
 8. Includes smooth transitions between concepts
 
 Return ONLY the lecture script as plain text, ready to be spoken.
-Do not include stage directions or formatting.""",
+Do not include stage directions or formatting.
+
+CRITICAL: Do NOT include the section title as a heading or title line at the start of the lecture. Start directly with the introductory paragraph content.""",
 
     # Section Lecture Generation - Single Objective Content
     "courses.generate_objective_content": """Generate lecture content for ONE specific learning objective within a course section.
@@ -425,6 +427,8 @@ The presentation style is mandatory and must be evident from the first sentence 
 You may reorder the content as needed for optimal flow, as long as all objectives are covered.
 
 Return ONLY the refined lecture script as plain text, ready to be spoken.
+
+CRITICAL: Do NOT include the section title as a heading or title line at the start of the lecture. Start directly with the introductory paragraph content.
 Do not include stage directions, formatting, or objective labels.
 Do not use explicit figure references like "Figure 1" - just describe what the figure shows naturally as part of the narrative.""",
 
