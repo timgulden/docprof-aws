@@ -476,34 +476,61 @@ export const SectionPlayer = ({ sectionId, sectionTitle, courseId: propCourseId,
           if (pollInterval) clearInterval(pollInterval);
           if (checkCompleteInterval) clearInterval(checkCompleteInterval);
           
-          // Small delay to ensure delivery is saved
-          setTimeout(async () => {
-            try {
-              // Deduplicate: reuse existing promise if available
-              if (!getSectionLecturePromiseRef.current) {
-                getSectionLecturePromiseRef.current = getSectionLecture(sectionId);
+          // Retry logic to handle race condition where status says "complete" 
+          // but lecture endpoint still returns 202
+          const loadLectureWithRetry = async (maxRetries = 5, delayMs = 2000) => {
+            for (let attempt = 1; attempt <= maxRetries; attempt++) {
+              try {
+                console.log(`Loading lecture (attempt ${attempt}/${maxRetries})...`);
+                
+                // Wait before attempting (exponential backoff)
+                await new Promise(resolve => setTimeout(resolve, delayMs * attempt));
+                
+                // Deduplicate: reuse existing promise if available
+                if (!getSectionLecturePromiseRef.current) {
+                  getSectionLecturePromiseRef.current = getSectionLecture(sectionId);
+                }
+                const data = await getSectionLecturePromiseRef.current;
+                getSectionLecturePromiseRef.current = null; // Clear after use
+                
+                // Success! Load the lecture
+                setLectureScript(data.lectureScript);
+                setEstimatedMinutes(data.estimatedMinutes);
+                setFiguresAndPreload(data.figures || []);
+                
+                // Load Q&A history if available
+                if (data.qaHistory) {
+                  loadQAHistory(data.qaHistory);
+                }
+                
+                setGenerationProgress("");
+                setGenerationStartTime(null);
+                setLoading(false);
+                return; // Success - exit retry loop
+                
+              } catch (err: any) {
+                console.log(`Lecture load attempt ${attempt} failed:`, err.message);
+                getSectionLecturePromiseRef.current = null; // Clear failed promise
+                
+                // If this is a 202 (still generating) and we have more retries, continue
+                if (err.message?.includes("in progress") && attempt < maxRetries) {
+                  console.log(`Lecture still generating, will retry in ${delayMs * (attempt + 1)}ms...`);
+                  continue;
+                }
+                
+                // If we're out of retries or it's a different error, show error
+                if (attempt === maxRetries) {
+                  console.error("Failed to load lecture after all retries:", err);
+                  setError("Lecture generation completed but failed to load. Please refresh.");
+                  setLoading(false);
+                  return;
+                }
               }
-              const data = await getSectionLecturePromiseRef.current;
-              getSectionLecturePromiseRef.current = null; // Clear after use
-              setLectureScript(data.lectureScript);
-              setEstimatedMinutes(data.estimatedMinutes);
-              setFiguresAndPreload(data.figures || []);
-              
-              // Load Q&A history if available
-              if (data.qaHistory) {
-                loadQAHistory(data.qaHistory);
-              }
-              
-              setGenerationProgress("");
-              setGenerationStartTime(null);
-              setLoading(false);
-              // Don't check audio - only when user clicks play
-            } catch (err: any) {
-              console.error("Failed to load completed lecture:", err);
-              setError("Lecture generation completed but failed to load. Please refresh.");
-              setLoading(false);
             }
-          }, 1000);
+          };
+          
+          // Start retry process
+          loadLectureWithRetry();
         }
       } catch (err: any) {
         consecutiveErrors++;
