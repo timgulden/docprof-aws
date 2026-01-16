@@ -265,7 +265,12 @@ def generate_course_parts(
     import json
     
     query = state.pending_course_query or ""
-    hours = state.pending_course_hours or 2.0
+    
+    if state.pending_course_hours is None:
+        logger.error(f"CRITICAL: pending_course_hours is None in generate_parts_outline!")
+        raise ValueError("pending_course_hours is None - course state is corrupted")
+    
+    hours = state.pending_course_hours
     target_minutes = int(hours * 60)
     
     if not books:
@@ -366,7 +371,11 @@ def handle_parts_generated(
     """
     Handle Phase 1 completion: Parse parts and start Phase 2 for first part.
     """
-    target_minutes = int((state.pending_course_hours or 2.0) * 60)
+    if state.pending_course_hours is None:
+        logger.error(f"CRITICAL: pending_course_hours is None in handle_parts_generated!")
+        raise ValueError("pending_course_hours is None - course state is corrupted")
+    
+    target_minutes = int(state.pending_course_hours * 60)
     parts_list = parse_parts_text(parts_text, target_minutes)
     
     if not parts_list:
@@ -494,10 +503,15 @@ def check_and_review_outline(
     
     # Parse outline to calculate total time
     total_minutes = parse_outline_total_time(state.outline_text or "")
-    target_minutes = int((state.pending_course_hours or 2.0) * 60)
+    
+    if state.pending_course_hours is None:
+        logger.error(f"CRITICAL: pending_course_hours is None in check_and_review_outline!")
+        raise ValueError("pending_course_hours is None - course state is corrupted")
+    
+    target_minutes = int(state.pending_course_hours * 60)
     
     logger.info(f"check_and_review_outline: Total minutes from outline: {total_minutes}, Target: {target_minutes}")
-    logger.info(f"check_and_review_outline: Using hours value: {state.pending_course_hours or 2.0} (from state.pending_course_hours)")
+    logger.info(f"check_and_review_outline: Using hours value: {state.pending_course_hours}")
     
     variance = abs(total_minutes - target_minutes) / target_minutes if target_minutes > 0 else 1.0
     logger.info(f"check_and_review_outline: Time variance: {variance:.2%} (threshold: 5%)")
@@ -557,7 +571,12 @@ def review_and_adjust_outline(
     import json
     
     query = state.pending_course_query or ""
-    hours = state.pending_course_hours or 2.0
+    
+    if state.pending_course_hours is None:
+        logger.error(f"CRITICAL: pending_course_hours is None in review_and_adjust_outline!")
+        raise ValueError("pending_course_hours is None - course state is corrupted")
+    
+    hours = state.pending_course_hours
     
     logger.info(f"review_and_adjust_outline: state.pending_course_hours = {state.pending_course_hours}")
     logger.info(f"review_and_adjust_outline: Using hours = {hours}")
@@ -999,12 +1018,16 @@ def parse_text_outline_to_database(
         prefs = CoursePreferences()
     
     # Use existing course_id and user_id (course already exists in PostgreSQL)
+    if state.pending_course_hours is None:
+        logger.error(f"CRITICAL: pending_course_hours is None in parse_text_outline_to_database!")
+        raise ValueError("pending_course_hours is None - course state is corrupted")
+    
     course = Course(
         course_id=existing_course_id,  # Use existing course_id
         user_id=existing_user_id,  # Use existing user_id from database
         title=course_title,
         original_query=query,
-        estimated_hours=state.pending_course_hours or 2.0,
+        estimated_hours=state.pending_course_hours,
         preferences=prefs,
     )
     
@@ -1107,7 +1130,12 @@ def generate_course_outline(
     This is the core outline generation step.
     """
     query = state.pending_course_query or ""
-    hours = state.pending_course_hours or 2.0
+    
+    if state.pending_course_hours is None:
+        logger.error(f"CRITICAL: pending_course_hours is None in generate_course_outline_single_step!")
+        raise ValueError("pending_course_hours is None - course state is corrupted")
+    
+    hours = state.pending_course_hours
     prefs = state.pending_course_prefs or CoursePreferences()
     
     # Log the query being used (for debugging revisions)
@@ -1224,7 +1252,12 @@ def store_course_outline(
     # Validate and log time estimates
     sections_data = outline_data.get("sections", [])
     total_minutes = sum(s.get("time_minutes", 0) for s in sections_data)
-    target_minutes = int((state.pending_course_hours or 2.0) * 60)
+    
+    if state.pending_course_hours is None:
+        logger.error(f"CRITICAL: pending_course_hours is None in store_course_outline!")
+        raise ValueError("pending_course_hours is None - course state is corrupted")
+    
+    target_minutes = int(state.pending_course_hours * 60)
     time_variance = abs(total_minutes - target_minutes) / target_minutes if target_minutes > 0 else 0
     
     if time_variance > 0.10:  # More than 10% off
@@ -1366,11 +1399,15 @@ def store_course_outline(
         if prefs is None:
             prefs = CoursePreferences()  # Use defaults
         
+        if state.pending_course_hours is None:
+            logger.error(f"CRITICAL: pending_course_hours is None in store_course_outline (legacy path)!")
+            raise ValueError("pending_course_hours is None - course state is corrupted")
+        
         course = Course(
             user_id=state.session_id or str(uuid4()),
             title=course_title,
             original_query=state.pending_course_query or "",
-            estimated_hours=state.pending_course_hours or 2.0,
+            estimated_hours=state.pending_course_hours,
             preferences=prefs,
         )
         

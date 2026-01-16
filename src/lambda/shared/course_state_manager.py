@@ -84,9 +84,9 @@ def course_state_to_dict(state: CourseState) -> Dict[str, Any]:
         elif isinstance(hours_value, str):
             try:
                 result['pending_course_hours'] = Decimal(hours_value)
-            except (ValueError, TypeError):
-                logger.warning(f"Could not convert pending_course_hours string to Decimal: {hours_value}")
-                result['pending_course_hours'] = Decimal('2.0')  # Fallback
+            except (ValueError, TypeError) as e:
+                logger.error(f"CRITICAL: Could not convert pending_course_hours to Decimal: {hours_value}")
+                raise ValueError(f"Invalid pending_course_hours value: {hours_value}") from e
     
     # Handle float fields in nested models
     if result.get('current_course') and isinstance(result['current_course'], dict):
@@ -165,9 +165,12 @@ def dict_to_course_state(state_dict: Dict[str, Any]) -> CourseState:
         elif isinstance(hours_value, str):
             try:
                 state_dict['pending_course_hours'] = float(hours_value)
-            except (ValueError, TypeError):
-                logger.warning(f"Could not convert pending_course_hours string to float: {hours_value}, using default 2.0")
-                state_dict['pending_course_hours'] = 2.0
+            except (ValueError, TypeError) as e:
+                logger.error(f"CRITICAL: Could not convert pending_course_hours to float: {hours_value}, type: {type(hours_value)}")
+                raise ValueError(f"Invalid pending_course_hours in DynamoDB: {hours_value}") from e
+        else:
+            logger.error(f"CRITICAL: pending_course_hours has unexpected type: {type(hours_value)}, value: {hours_value}")
+            raise TypeError(f"pending_course_hours must be Decimal or string, got {type(hours_value)}")
     
     # Handle Decimal in nested models
     if state_dict.get('current_course') and isinstance(state_dict['current_course'], dict):
