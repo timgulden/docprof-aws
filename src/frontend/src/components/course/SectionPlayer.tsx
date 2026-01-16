@@ -27,6 +27,24 @@ export const SectionPlayer = ({ sectionId, sectionTitle, courseId: propCourseId,
   const navigate = useNavigate();
   const { courseId: paramCourseId } = useParams<{ courseId: string }>();
   const courseId = propCourseId || paramCourseId; // Use prop first, then param
+  
+  // Helper to strip the first heading from lecture script (it's redundant with the page title)
+  const stripFirstHeading = (script: string): string => {
+    if (!script) return script;
+    
+    // Remove first line if it's a markdown heading (# Title)
+    const lines = script.split('\n');
+    if (lines.length > 0 && lines[0].trim().startsWith('#')) {
+      // Remove the first line and any immediately following empty lines
+      let startIndex = 1;
+      while (startIndex < lines.length && lines[startIndex].trim() === '') {
+        startIndex++;
+      }
+      return lines.slice(startIndex).join('\n');
+    }
+    return script;
+  };
+  
   const [lectureScript, setLectureScript] = useState<string | null>(null);
   const [lectureFigures, setLectureFigures] = useState<Array<{
     figure_id: string;
@@ -325,7 +343,7 @@ export const SectionPlayer = ({ sectionId, sectionTitle, courseId: propCourseId,
         getSectionLecturePromiseRef.current = null; // Clear after use
         
         // If we get here, lecture exists and is ready
-        setLectureScript(data.lectureScript);
+        setLectureScript(stripFirstHeading(data.lectureScript));
         setEstimatedMinutes(data.estimatedMinutes);
         console.log("getSectionLecture response:", { figures: data.figures, figuresCount: data.figures?.length || 0, qaHistory: data.qaHistory?.length || 0 });
         setFiguresAndPreload(data.figures || []);
@@ -494,7 +512,7 @@ export const SectionPlayer = ({ sectionId, sectionTitle, courseId: propCourseId,
                 getSectionLecturePromiseRef.current = null; // Clear after use
                 
                 // Success! Load the lecture
-                setLectureScript(data.lectureScript);
+                setLectureScript(stripFirstHeading(data.lectureScript));
                 setEstimatedMinutes(data.estimatedMinutes);
                 setFiguresAndPreload(data.figures || []);
                 
@@ -589,7 +607,7 @@ export const SectionPlayer = ({ sectionId, sectionTitle, courseId: propCourseId,
             const data = await getSectionLecturePromiseRef.current;
             getSectionLecturePromiseRef.current = null; // Clear after use
             // If we get here, lecture is ready
-            setLectureScript(data.lectureScript);
+            setLectureScript(stripFirstHeading(data.lectureScript));
             setEstimatedMinutes(data.estimatedMinutes);
             setLectureFigures(data.figures || []);
             
@@ -1494,7 +1512,7 @@ When answering, maintain the same conversational style as the lecture. If asked 
                   }
                   const data = await getSectionLecturePromiseRef.current;
                   getSectionLecturePromiseRef.current = null; // Clear after use
-                  setLectureScript(data.lectureScript);
+                  setLectureScript(stripFirstHeading(data.lectureScript));
                   setEstimatedMinutes(data.estimatedMinutes);
                   setLectureFigures(data.figures || []);
                   
