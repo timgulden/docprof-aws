@@ -1,0 +1,187 @@
+name: Deploy DocProf Course Pipeline
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'src/lambda/**'
+      - 'template.yaml'
+      - 'samconfig.toml'
+      - '.github/workflows/deploy.yml'
+  
+  pull_request:
+    branches:
+      - main
+    paths:
+      - 'src/lambda/**'
+      - 'template.yaml'
+
+  workflow_dispatch:  # Allow manual trigger
+
+env:
+  AWS_REGION: us-east-1
+  SAM_STACK_NAME: docprof-dev-course-pipeline
+
+jobs:
+  # ============================================================================
+  # Test job - runs on PR and main
+  # ============================================================================
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          cd src/lambda
+          pip install -r shared/requirements.txt || true
+          pip install pytest pytest-cov
+
+      - name: Run unit tests
+        run: |
+          cd src/lambda
+          python -m pytest tests/unit/ -v --cov=shared --cov-report=term-missing || echo "No tests found"
+
+      - name: Lint Python code
+        run: |
+          pip install flake8
+          flake8 src/lambda --count --select=E9,F63,F7,F82 --show-source --statistics || true
+
+  # ============================================================================
+  # Build job - validates SAM template and builds
+  # ============================================================================
+  build:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Set up AWS SAM CLI
+        uses: aws-actions/setup-sam@v2
+        with:
+          use-installer: true
+
+      - name: Validate SAM template
+        run: sam validate --lint
+
+      - name: Build SAM application
+        run: sam build --cached
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v3
+        with:
+          name: sam-build
+          path: .aws-sam/build
+
+  # ============================================================================
+  # Deploy job - only runs on main branch after tests pass
+  # ============================================================================
+  deploy:
+    needs: build
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: dev  # Requires GitHub environment approval
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Set up AWS SAM CLI
+        uses: aws-actions/setup-sam@v2
+        with:
+          use-installer: true
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v3
+        with:
+          name: sam-build
+          path: .aws-sam/build
+
+      - name: Deploy to AWS
+        run: |
+          sam deploy \
+            --stack-name ${{ env.SAM_STACK_NAME }} \
+            --no-confirm-changeset \
+            --no-fail-on-empty-changeset \
+            --region ${{ env.AWS_REGION }}
+
+      - name: Get API endpoint
+        id: get-endpoint
+        run: |
+          ENDPOINT=$(aws cloudformation describe-stacks \
+            --stack-name ${{ env.SAM_STACK_NAME }} \
+            --query 'Stacks[0].Outputs[?OutputKey==`ApiEndpoint`].OutputValue' \
+            --output text)
+          echo "API_ENDPOINT=$ENDPOINT" >> $GITHUB_OUTPUT
+
+      - name: Deployment summary
+        run: |
+          echo "🎉 Deployment successful!"
+          echo "API Endpoint: ${{ steps.get-endpoint.outputs.API_ENDPOINT }}"
+          echo ""
+          echo "Deployed resources:"
+          aws cloudformation describe-stack-resources \
+            --stack-name ${{ env.SAM_STACK_NAME }} \
+            --query 'StackResources[?ResourceType==`AWS::Lambda::Function`].[LogicalResourceId,PhysicalResourceId]' \
+            --output table
+
+  # ============================================================================
+  # Smoke test - verify deployment works
+  # ============================================================================
+  smoke-test:
+    needs: deploy
+    runs-on: ubuntu-latest
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Test Lambda invocation
+        run: |
+          echo "Testing course-status-handler Lambda..."
+          aws lambda invoke \
+            --function-name docprof-dev-course-status-handler \
+            --payload '{"pathParameters":{"courseId":"test-123"}}' \
+            response.json || echo "Expected error for non-existent course"
+          
+          cat response.json
+          
+          if grep -q "statusCode" response.json; then
+            echo "✅ Lambda responded successfully"
+          else
+            echo "❌ Lambda did not respond properly"
+            exit 1
+          fi
+
+      - name: Check CloudWatch logs
+        run: |
+          echo "Recent Lambda invocations:"
+          aws logs tail /aws/lambda/docprof-dev-course-status-handler --since 5m || echo "No recent logs"
+

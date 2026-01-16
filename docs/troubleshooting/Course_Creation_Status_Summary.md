@@ -304,3 +304,4 @@ psql -h <endpoint> -U docprof_admin -d docprof -c "SELECT * FROM courses WHERE c
 
 **Ready for testing!** Create a course and check the CloudWatch logs to see where the flow breaks.
 
+

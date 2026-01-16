@@ -1,10 +1,22 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { createCourse } from "../../api/courses";
+import { createCourse, getCourseStatus } from "../../api/courses";
 
 interface CourseCreationFormProps {
   onCourseCreated?: (courseId: string) => void;
 }
+
+// Ordered phases for progress bar
+const PHASES = [
+  { key: "initializing", label: "Analyzing" },
+  { key: "searching_books", label: "Searching" },
+  { key: "generating_sections", label: "Planning" },
+  { key: "reviewing_outline", label: "Reviewing" },
+  { key: "storing_sections", label: "Saving" },
+  { key: "complete", label: "Complete" },
+] as const;
+
+type Phase = typeof PHASES[number]["key"];
 
 export const CourseCreationForm = ({ onCourseCreated }: CourseCreationFormProps) => {
   const [query, setQuery] = useState("");
@@ -12,6 +24,7 @@ export const CourseCreationForm = ({ onCourseCreated }: CourseCreationFormProps)
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [statusMessage, setStatusMessage] = useState<string>("");
+  const [currentPhase, setCurrentPhase] = useState<Phase>("initializing");
   const navigate = useNavigate();
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -25,32 +38,11 @@ export const CourseCreationForm = ({ onCourseCreated }: CourseCreationFormProps)
     setError(null);
     setStatusMessage("Analyzing your request and finding relevant material...");
 
-    // Simulate progress updates (since course creation is async)
-    const progressMessages = [
-      "Analyzing your request and finding relevant material...",
-      "Searching knowledge base for relevant content...",
-      "Finding relevant books and summaries...",
-      "Planning course structure...",
-      "Generating course sections...",
-      "Reviewing and finalizing course outline...",
-    ];
-
-    let messageIndex = 0;
-    const progressInterval = setInterval(() => {
-      if (messageIndex < progressMessages.length - 1) {
-        messageIndex++;
-        setStatusMessage(progressMessages[messageIndex]);
-      }
-    }, 8000); // Update message every 8 seconds
-
     try {
       const result = await createCourse({
         query: query.trim(),
         timeHours,
       });
-
-      clearInterval(progressInterval);
-      setStatusMessage("Course created successfully!");
 
       const courseId = result.courseId || (result as any).course_id;
       if (!courseId) {
@@ -58,20 +50,55 @@ export const CourseCreationForm = ({ onCourseCreated }: CourseCreationFormProps)
         return;
       }
       
-      // Small delay to show success message
-      await new Promise(resolve => setTimeout(resolve, 500));
+      // Poll for status updates
+      const pollInterval = setInterval(async () => {
+        try {
+          const status = await getCourseStatus(courseId);
+          
+          // Update phase for progress bar
+          setCurrentPhase(status.phase as Phase);
+          
+          // Use backend message if available
+          setStatusMessage(status.progress?.message || status.message || "Processing...");
+          
+          if (status.status === "complete" && status.phase === "complete") {
+            clearInterval(pollInterval);
+            setStatusMessage(status.progress?.message || "Course created successfully!");
+            
+            // Small delay to show success message
+            await new Promise(resolve => setTimeout(resolve, 1000));
+            
+            if (onCourseCreated) {
+              onCourseCreated(courseId);
+            } else {
+              navigate(`/courses/${courseId}`);
+            }
+          } else if (status.status === "error") {
+            clearInterval(pollInterval);
+            setError(status.error || "Course creation failed");
+            setStatusMessage("");
+            setLoading(false);
+          }
+        } catch (err) {
+          console.error("Failed to poll status:", err);
+          // Don't stop polling on individual errors, but log them
+        }
+      }, 2000); // Poll every 2 seconds
       
-      if (onCourseCreated) {
-        onCourseCreated(courseId);
-      } else {
-        navigate(`/courses/${courseId}`);
-      }
+      // Safety timeout: stop polling after 2 minutes
+      setTimeout(() => {
+        clearInterval(pollInterval);
+        if (loading) {
+          setError("Course creation timed out. Please refresh and check your courses.");
+          setStatusMessage("");
+          setLoading(false);
+        }
+      }, 120000);
+      
     } catch (err) {
-      clearInterval(progressInterval);
       console.error("Failed to create course:", err);
       setError(err instanceof Error ? err.message : "Failed to create course");
       setStatusMessage("");
-    } finally {
       setLoading(false);
     }
   };
@@ -132,20 +159,54 @@ export const CourseCreationForm = ({ onCourseCreated }: CourseCreationFormProps)
 
         {/* Progress Indicator */}
         {loading && (
-          <div className="space-y-3">
-            <div className="flex items-center gap-3">
-              <div className="inline-block animate-spin rounded-full h-5 w-5 border-b-2 border-blue-600"></div>
-              <p className="text-sm text-gray-600">{statusMessage || "Creating course..."}</p>
+          <div className="space-y-4">
+            {/* Phase Progress Bar */}
+            <div className="flex items-center justify-between">
+              {PHASES.map((phase, index) => {
+                const phaseIndex = PHASES.findIndex(p => p.key === currentPhase);
+                const isComplete = index < phaseIndex;
+                const isCurrent = index === phaseIndex;
+                const isPending = index > phaseIndex;
+                
+                return (
+                  <div key={phase.key} className="flex flex-col items-center flex-1">
+                    {/* Phase dot */}
+                    <div className="flex items-center w-full">
+                      {index > 0 && (
+                        <div 
+                          className={`flex-1 h-1 ${isComplete ? 'bg-blue-600' : 'bg-gray-200'}`}
+                        />
+                      )}
+                      <div 
+                        className={`w-4 h-4 rounded-full flex items-center justify-center text-xs font-bold
+                          ${isComplete ? 'bg-blue-600 text-white' : ''}
+                          ${isCurrent ? 'bg-blue-600 text-white animate-pulse' : ''}
+                          ${isPending ? 'bg-gray-200 text-gray-400' : ''}
+                        `}
+                      >
+                        {isComplete ? '✓' : index + 1}
+                      </div>
+                      {index < PHASES.length - 1 && (
+                        <div 
+                          className={`flex-1 h-1 ${isComplete ? 'bg-blue-600' : 'bg-gray-200'}`}
+                        />
+                      )}
+                    </div>
+                    {/* Phase label */}
+                    <span className={`text-xs mt-1 ${isCurrent ? 'text-blue-600 font-semibold' : 'text-gray-500'}`}>
+                      {phase.label}
+                    </span>
+                  </div>
+                );
+              })}
             </div>
-            <div className="w-full bg-gray-200 rounded-full h-2">
-              <div
-                className="bg-blue-600 h-2 rounded-full transition-all duration-500"
-                style={{
-                  width: loading ? "100%" : "0%",
-                  animation: loading ? "pulse 2s ease-in-out infinite" : "none",
-                }}
-              />
+            
+            {/* Status Message */}
+            <div className="flex items-center justify-center gap-3 py-2 px-4 bg-blue-50 rounded-lg">
+              <div className="inline-block animate-spin rounded-full h-4 w-4 border-2 border-blue-600 border-t-transparent"></div>
+              <p className="text-sm text-blue-700">{statusMessage || "Creating course..."}</p>
             </div>
+            
             <p className="text-xs text-gray-500 text-center">
               This usually takes 30-60 seconds. Please wait...
             </p>

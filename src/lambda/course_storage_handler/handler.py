@@ -59,18 +59,34 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         course_event = OutlineReviewEvent(reviewed_outline_text=reviewed_outline_text or state.outline_text or "")
         
         # Process through logic layer (this will parse and create commands)
+        logger.info(f"Storage handler: Processing OutlineReviewEvent for course {course_id}")
+        logger.info(f"Storage handler: State has user_id: {state.user_id}")
+        logger.info(f"Storage handler: Outline text length: {len(reviewed_outline_text or state.outline_text or '')}")
+        
         result = reduce_course_event(state, course_event)
         
         # Execute commands (CreateCourseCommand, CreateSectionsCommand)
+        logger.info(f"Storage handler: Logic returned {len(result.commands)} commands")
+        logger.info(f"Storage handler: Command types: {[type(c).__name__ for c in result.commands]}")
+        
+        if len(result.commands) == 0:
+            logger.error(f"CRITICAL: No commands returned from reduce_course_event!")
+            publish_course_error_event(course_id, "No commands returned - course storage failed")
+            return {'statusCode': 500, 'body': json.dumps({'error': 'No commands returned'})}
+        
         stored_course_id = course_id  # Default to original course_id
         
-        for command in result.commands:
+        for idx, command in enumerate(result.commands):
+            logger.info(f"Storage handler: Executing command {idx+1}/{len(result.commands)}: {type(command).__name__}")
             command_result = execute_command(command, result.new_state)
+            logger.info(f"Storage handler: Command {idx+1} result: status={command_result.get('status')}")
             
             if isinstance(command, CreateCourseCommand):
+                logger.info(f"Storage handler: CreateCourseCommand with title='{command.course.title}'")
                 if command_result.get('status') == 'success':
                     # Course stored - get final course_id if returned
                     stored_course_id = command_result.get('course_id', course_id)
+                    logger.info(f"Storage handler: Course stored successfully with ID: {stored_course_id}")
                 else:
                     error_msg = command_result.get('error', 'Unknown error')
                     logger.error(f"Course storage failed: {error_msg}")
@@ -78,11 +94,19 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                     return {'statusCode': 500, 'body': json.dumps({'error': error_msg})}
             
             elif isinstance(command, CreateSectionsCommand):
+                sections_count = len(command.sections)
+                logger.info(f"Storage handler: CreateSectionsCommand with {sections_count} sections")
                 if command_result.get('status') != 'success':
                     error_msg = command_result.get('error', 'Unknown error')
                     logger.error(f"Sections storage failed: {error_msg}")
                     publish_course_error_event(course_id, f"Sections storage failed: {error_msg}")
                     return {'statusCode': 500, 'body': json.dumps({'error': error_msg})}
+                else:
+                    stored_count = command_result.get('sections_count', 0)
+                    logger.info(f"Storage handler: Sections stored successfully: {stored_count} sections")
+                    if stored_count == 0:
+                        logger.error(f"CRITICAL: CreateSectionsCommand succeeded but stored 0 sections!")
+                        logger.error(f"CRITICAL: Command had {sections_count} sections to store")
         
         # Delete state from DynamoDB (course now in Aurora)
         delete_course_state(course_id)

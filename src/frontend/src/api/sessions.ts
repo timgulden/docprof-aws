@@ -1,5 +1,5 @@
 import type { SessionMetadata, SessionType } from "../types/chat";
-import { apiClient } from "./client";
+import { apiClient, withRetry } from "./client";
 
 interface RawSessionMetadata {
   session_id: string;
@@ -24,7 +24,14 @@ interface UpdateSessionRequest {
 }
 
 export const listSessions = async (): Promise<SessionMetadata[]> => {
-  const response = await apiClient.get<RawSessionMetadata[]>("/chat/sessions");
+  const response = await withRetry(
+    () => apiClient.get<RawSessionMetadata[]>("/chat/sessions"),
+    {
+      onRetry: (attempt) => {
+        console.log(`[Sessions] Database may be waking up, retrying in 3s... (attempt ${attempt + 1}/3)`);
+      }
+    }
+  );
   return response.data.map(normalizeSessionMetadata);
 };
 
@@ -60,12 +67,19 @@ export const getSessionWithMessages = async (sessionId: string): Promise<{
   messages: RawMessage[];
   sessionContext?: string;
 }> => {
-  const response = await apiClient.get<RawSessionMetadata & {
-    messages: RawMessage[];
-    session_context?: string;
-  }>(`/chat/sessions/${sessionId}`, {
-    params: { include_messages: true },
-  });
+  const response = await withRetry(
+    () => apiClient.get<RawSessionMetadata & {
+      messages: RawMessage[];
+      session_context?: string;
+    }>(`/chat/sessions/${sessionId}`, {
+      params: { include_messages: true },
+    }),
+    {
+      onRetry: (attempt) => {
+        console.log(`[Session Messages] Database may be waking up, retrying in 3s... (attempt ${attempt + 1}/3)`);
+      }
+    }
+  );
   
   return {
     metadata: normalizeSessionMetadata(response.data),

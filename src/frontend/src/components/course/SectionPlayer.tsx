@@ -220,19 +220,17 @@ export const SectionPlayer = ({ sectionId, sectionTitle, courseId: propCourseId,
 
     const loadMetadata = async () => {
       try {
-        console.log("Loading lecture metadata for highlighting...");
-        const metadata = await getSectionLectureMetadata(sectionId);
-        console.log(`✅ Loaded ${metadata.chunks.length} chunks for highlighting`);
-        console.log(`Chunk metadata sample:`, metadata.chunks.slice(0, 2).map(c => ({
-          text: c.text.substring(0, 50) + '...',
-          start_proportion: c.start_proportion,
-          end_proportion: c.end_proportion
-        })));
-        setChunkMetadata(metadata.chunks);
-        // currentChunkIndex is managed by the hook
+        // Note: Metadata endpoint not yet implemented in AWS
+        // Silently skip for now - highlighting will be added in future release
+        // console.log("Loading lecture metadata for highlighting...");
+        // const metadata = await getSectionLectureMetadata(sectionId);
+        // console.log(`✅ Loaded ${metadata.chunks.length} chunks for highlighting`);
+        // setChunkMetadata(metadata.chunks);
+        
+        // For now, just set to null (no highlighting)
+        setChunkMetadata(null);
       } catch (error) {
-        console.error("❌ Failed to load lecture metadata:", error);
-        // If metadata fails, we can still display the lecture without highlighting
+        // Silently handle - metadata is optional
         setChunkMetadata(null);
       }
     };

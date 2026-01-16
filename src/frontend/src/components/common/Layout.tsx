@@ -19,13 +19,15 @@ export const Layout = () => {
   const isSourcesRoute = location.pathname === "/sources";
   const isCourseDetailRoute = /^\/courses\/[^/]+$/.test(location.pathname); // Matches /courses/:courseId
 
-  // Tunnel status query - only succeeds if user is "tim"
-  const { data: tunnelStatus, isLoading: tunnelLoading } = useQuery({
-    queryKey: ["tunnel-status"],
-    queryFn: getTunnelStatus,
-    refetchInterval: 5000, // Poll every 5 seconds to keep status updated
-    retry: false, // Don't retry on 403 (not tim user) or other errors
-  });
+  // Tunnel status query - DISABLED for AWS (only needed for local ngrok setup)
+  // const { data: tunnelStatus, isLoading: tunnelLoading } = useQuery({
+  //   queryKey: ["tunnel-status"],
+  //   queryFn: getTunnelStatus,
+  //   refetchInterval: 5000, // Poll every 5 seconds to keep status updated
+  //   retry: false, // Don't retry on 403 (not tim user) or other errors
+  // });
+  const tunnelStatus = undefined;
+  const tunnelLoading = false;
 
   // Tunnel enable/disable mutations
   const enableMutation = useMutation({

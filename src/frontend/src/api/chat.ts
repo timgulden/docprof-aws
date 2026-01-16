@@ -53,16 +53,24 @@ interface RawBackendResponse {
 }
 
 export const sendChatMessage = async (payload: BackendChatPayload): Promise<BackendChatResponse> => {
-  const response = await apiClient.post<RawBackendResponse>("/chat/message", {
-    message: payload.message,
-    with_audio: payload.withAudio,
-    session_id: payload.sessionId,
-    context: payload.context,
-    book_ids: payload.bookIds,
-    ephemeral: payload.ephemeral,
-    section_id: payload.sectionId,
-    chunk_index: payload.chunkIndex,
-  });
+  const { withRetry } = await import("./client");
+  const response = await withRetry(
+    () => apiClient.post<RawBackendResponse>("/chat/message", {
+      message: payload.message,
+      with_audio: payload.withAudio,
+      session_id: payload.sessionId,
+      context: payload.context,
+      book_ids: payload.bookIds,
+      ephemeral: payload.ephemeral,
+      section_id: payload.sectionId,
+      chunk_index: payload.chunkIndex,
+    }),
+    {
+      onRetry: (attempt) => {
+        console.log(`[Chat] Database may be waking up, retrying in 3s... (attempt ${attempt + 1}/3)`);
+      }
+    }
+  );
 
   const raw = response.data;
   return {

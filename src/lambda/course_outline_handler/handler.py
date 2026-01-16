@@ -158,6 +158,7 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                 section_rows = cur.fetchall()
         
         # Parse sections
+        logger.info(f"Found {len(section_rows)} sections in database for course {course_id_db}")
         sections = []
         for row in section_rows:
             (section_id, course_id_sec, parent_section_id, order_index,

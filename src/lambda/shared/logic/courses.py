@@ -636,32 +636,14 @@ def parse_text_outline_to_database(
         logger.warning("No course_id in state.session_id, generating new one")
         existing_course_id = str(uuid4())
     
-    # Get user_id from existing course record in database
-    # We need to query it since state.session_id is course_id, not user_id
-    # NOTE: This is a side effect in a logic function, but necessary to get user_id
-    # In a pure FP design, this would be passed through state or as a command parameter
-    from shared.db_utils import get_db_connection
-    existing_user_id = None
-    try:
-        with get_db_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    "SELECT user_id FROM courses WHERE course_id = %s::uuid",
-                    (existing_course_id,)
-                )
-                row = cur.fetchone()
-                if row:
-                    existing_user_id = str(row[0])
-                    logger.info(f"Retrieved user_id {existing_user_id} for course {existing_course_id}")
-                else:
-                    logger.warning(f"Course {existing_course_id} not found in database, using fallback")
-                    existing_user_id = str(uuid4())  # Fallback - shouldn't happen
-    except Exception as e:
-        logger.error(f"Failed to query existing course for user_id: {e}", exc_info=True)
-        existing_user_id = str(uuid4())  # Fallback
+    # Get user_id from state (set during course creation)
+    # This is the pure FP way - no database query needed!
+    existing_user_id = state.user_id
+    logger.info(f"parse_text_outline_to_database: Using user_id from state: {existing_user_id}")
     
     if not existing_user_id:
-        logger.error("Could not determine user_id, cannot create course")
+        logger.error("Could not determine user_id from state, cannot create course")
+        logger.error(f"State: session_id={state.session_id}, user_id={state.user_id}")
         return LogicResult(
             new_state=state,
             commands=[],
@@ -961,6 +943,27 @@ def parse_text_outline_to_database(
     # Generate course title - try to extract from first part, fallback to query
     import re as re_module  # Use different name to avoid conflict
     query = state.pending_course_query or ""
+    
+    # If query is empty, try to retrieve from existing course record in PostgreSQL
+    if not query:
+        logger.info(f"pending_course_query is empty, checking PostgreSQL for existing original_query")
+        from shared.db_utils import get_db_connection
+        try:
+            with get_db_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT original_query FROM courses WHERE course_id = %s::uuid",
+                        (existing_course_id,)
+                    )
+                    row = cur.fetchone()
+                    if row and row[0]:
+                        query = row[0]
+                        logger.info(f"Retrieved original_query from PostgreSQL: {query[:100]}...")
+                    else:
+                        logger.warning(f"No existing course found in PostgreSQL for {existing_course_id}")
+        except Exception as e:
+            logger.error(f"Failed to retrieve original_query from PostgreSQL: {e}", exc_info=True)
+    
     course_title = "Custom Course"
     
     if parts:

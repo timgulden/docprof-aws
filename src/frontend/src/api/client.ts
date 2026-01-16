@@ -98,3 +98,74 @@ apiClient.interceptors.response.use(
 
 // Legacy AUTH_TOKEN_KEY export for compatibility (not used with Cognito)
 export const AUTH_TOKEN_KEY = "auth_token";
+
+/**
+ * Retry configuration for API requests
+ */
+export interface RetryConfig {
+  maxRetries?: number;
+  retryDelay?: number; // milliseconds
+  retryableStatuses?: number[];
+  onRetry?: (attempt: number, error: any) => void;
+}
+
+/**
+ * Default retry configuration for database cold-start scenarios
+ */
+const DEFAULT_RETRY_CONFIG: Required<RetryConfig> = {
+  maxRetries: 2,
+  retryDelay: 3000, // 3 seconds - enough for Aurora to wake up
+  retryableStatuses: [500, 502, 503, 504], // Server errors
+  onRetry: (attempt, error) => {
+    console.log(`[API Retry] Attempt ${attempt + 1} after error:`, error.message);
+  },
+};
+
+/**
+ * Executes an API request with automatic retry on database cold-start errors
+ * Use this for endpoints that hit the database and may encounter Aurora wake-up delays
+ * 
+ * @example
+ * const books = await withRetry(() => apiClient.get<Book[]>("/books"));
+ */
+export async function withRetry<T>(
+  requestFn: () => Promise<AxiosResponse<T>>,
+  config: RetryConfig = {}
+): Promise<AxiosResponse<T>> {
+  const {
+    maxRetries,
+    retryDelay,
+    retryableStatuses,
+    onRetry,
+  } = { ...DEFAULT_RETRY_CONFIG, ...config };
+
+  let lastError: any;
+
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      return await requestFn();
+    } catch (error: any) {
+      lastError = error;
+
+      // Don't retry if it's the last attempt
+      if (attempt === maxRetries) {
+        break;
+      }
+
+      // Only retry on specific status codes (server errors)
+      const status = error.response?.status;
+      if (!status || !retryableStatuses.includes(status)) {
+        throw error;
+      }
+
+      // Call retry callback
+      onRetry(attempt, error);
+
+      // Wait before retrying
+      await new Promise(resolve => setTimeout(resolve, retryDelay));
+    }
+  }
+
+  // All retries exhausted
+  throw lastError;
+}

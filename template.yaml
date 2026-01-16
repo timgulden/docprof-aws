@@ -1,0 +1,406 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: DocProf Course Pipeline - SAM Application
+
+# Global configurations for all functions
+Globals:
+  Function:
+    Runtime: python3.11
+    MemorySize: 512
+    Timeout: 300
+    Environment:
+      Variables:
+        # These will be imported from Terraform outputs
+        DB_CLUSTER_ENDPOINT: !Ref DBClusterEndpoint
+        DB_NAME: !Ref DBName
+        DB_MASTER_USERNAME: !Ref DBUsername
+        DB_PASSWORD_SECRET_ARN: !Ref DBPasswordSecretArn
+        DYNAMODB_COURSE_STATE_TABLE_NAME: !Ref DynamoDBTableName
+        AWS_ACCOUNT_ID: !Ref AWS::AccountId
+    VpcConfig:
+      SubnetIds: !Ref PrivateSubnetIds
+      SecurityGroupIds: 
+        - !Ref LambdaSecurityGroupId
+    Tags:
+      Project: docprof
+      Environment: dev
+      ManagedBy: sam
+
+# Parameters imported from Terraform infrastructure
+Parameters:
+  DBClusterEndpoint:
+    Type: String
+    Description: Aurora cluster endpoint
+  DBName:
+    Type: String
+    Description: Database name
+  DBUsername:
+    Type: String
+    Description: Database master username
+  DBPasswordSecretArn:
+    Type: String
+    Description: ARN of Secrets Manager secret containing DB password
+  DynamoDBTableName:
+    Type: String
+    Description: DynamoDB table name for course state
+  PrivateSubnetIds:
+    Type: CommaDelimitedList
+    Description: Private subnet IDs for Lambda VPC
+  LambdaSecurityGroupId:
+    Type: String
+    Description: Security group ID for Lambda functions
+  LambdaExecutionRoleArn:
+    Type: String
+    Description: IAM role ARN for Lambda execution
+  PythonDepsLayerArn:
+    Type: String
+    Description: ARN of Python dependencies layer (boto3, psycopg2, etc.)
+
+Resources:
+  # ============================================================================
+  # Shared Code Layer
+  # Auto-versioned: SAM creates new version on any change
+  # ============================================================================
+  SharedCodeLayer:
+    Type: AWS::Serverless::LayerVersion
+    Properties:
+      LayerName: docprof-dev-shared-code
+      Description: Shared application code for DocProf Lambda functions
+      ContentUri: src/lambda/shared/
+      CompatibleRuntimes:
+        - python3.11
+      RetentionPolicy: Retain
+    Metadata:
+      BuildMethod: python3.11
+
+  # ============================================================================
+  # Course Pipeline Lambda Functions
+  # ============================================================================
+
+  CourseRequestHandler:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: docprof-dev-course-request-handler
+      CodeUri: src/lambda/course_request_handler/
+      Handler: handler.lambda_handler
+      MemorySize: 1024
+      Timeout: 600
+      Role: !Ref LambdaExecutionRoleArn
+      Layers:
+        - !Ref PythonDepsLayerArn
+        - !Ref SharedCodeLayer
+      Events:
+        ApiEvent:
+          Type: Api
+          Properties:
+            Path: /courses/create
+            Method: POST
+            RestApiId: !Ref DocProfApi
+
+  CourseEmbeddingHandler:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: docprof-dev-course-embedding-handler
+      CodeUri: src/lambda/course_embedding_handler/
+      Handler: handler.lambda_handler
+      MemorySize: 1024
+      Timeout: 300
+      Role: !Ref LambdaExecutionRoleArn
+      Layers:
+        - !Ref PythonDepsLayerArn
+        - !Ref SharedCodeLayer
+      Events:
+        CourseRequested:
+          Type: EventBridgeRule
+          Properties:
+            Pattern:
+              source:
+                - docprof.course
+              detail-type:
+                - CourseRequested
+
+  CourseBookSearchHandler:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: docprof-dev-course-book-search-handler
+      CodeUri: src/lambda/course_book_search_handler/
+      Handler: handler.lambda_handler
+      Role: !Ref LambdaExecutionRoleArn
+      Layers:
+        - !Ref PythonDepsLayerArn
+        - !Ref SharedCodeLayer
+      Events:
+        EmbeddingGenerated:
+          Type: EventBridgeRule
+          Properties:
+            Pattern:
+              source:
+                - docprof.course
+              detail-type:
+                - EmbeddingGenerated
+
+  CoursePartsHandler:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: docprof-dev-course-parts-handler
+      CodeUri: src/lambda/course_parts_handler/
+      Handler: handler.lambda_handler
+      MemorySize: 1024
+      Role: !Ref LambdaExecutionRoleArn
+      Layers:
+        - !Ref PythonDepsLayerArn
+        - !Ref SharedCodeLayer
+      Events:
+        BookSummariesFound:
+          Type: EventBridgeRule
+          Properties:
+            Pattern:
+              source:
+                - docprof.course
+              detail-type:
+                - BookSummariesFound
+
+  CourseSectionsHandler:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: docprof-dev-course-sections-handler
+      CodeUri: src/lambda/course_sections_handler/
+      Handler: handler.lambda_handler
+      MemorySize: 1024
+      Role: !Ref LambdaExecutionRoleArn
+      Layers:
+        - !Ref PythonDepsLayerArn
+        - !Ref SharedCodeLayer
+      Events:
+        PartsGenerated:
+          Type: EventBridgeRule
+          Properties:
+            Pattern:
+              source:
+                - docprof.course
+              detail-type:
+                - PartsGenerated
+
+  CourseOutlineReviewer:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: docprof-dev-course-outline-reviewer
+      CodeUri: src/lambda/course_outline_reviewer/
+      Handler: handler.lambda_handler
+      MemorySize: 1024
+      Timeout: 300
+      Role: !Ref LambdaExecutionRoleArn
+      Layers:
+        - !Ref PythonDepsLayerArn
+        - !Ref SharedCodeLayer
+      Events:
+        AllPartsComplete:
+          Type: EventBridgeRule
+          Properties:
+            Pattern:
+              source:
+                - docprof.course
+              detail-type:
+                - AllPartsComplete
+
+  CourseStorageHandler:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: docprof-dev-course-storage-handler
+      CodeUri: src/lambda/course_storage_handler/
+      Handler: handler.lambda_handler
+      Role: !Ref LambdaExecutionRoleArn
+      Layers:
+        - !Ref PythonDepsLayerArn
+        - !Ref SharedCodeLayer
+      Events:
+        OutlineReviewed:
+          Type: EventBridgeRule
+          Properties:
+            Pattern:
+              source:
+                - docprof.course
+              detail-type:
+                - OutlineReviewed
+
+  # ============================================================================
+  # Course API Endpoints
+  # ============================================================================
+
+  CourseOutlineHandler:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: docprof-dev-course-outline-handler
+      CodeUri: src/lambda/course_outline_handler/
+      Handler: handler.lambda_handler
+      Role: !Ref LambdaExecutionRoleArn
+      Layers:
+        - !Ref PythonDepsLayerArn
+        - !Ref SharedCodeLayer
+      Events:
+        GetOutline:
+          Type: Api
+          Properties:
+            Path: /courses/{courseId}/outline
+            Method: GET
+            RestApiId: !Ref DocProfApi
+
+  CoursesListHandler:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: docprof-dev-courses-list
+      CodeUri: src/lambda/courses_list/
+      Handler: handler.lambda_handler
+      Role: !Ref LambdaExecutionRoleArn
+      Layers:
+        - !Ref PythonDepsLayerArn
+        - !Ref SharedCodeLayer
+      Events:
+        ListCourses:
+          Type: Api
+          Properties:
+            Path: /courses
+            Method: GET
+            RestApiId: !Ref DocProfApi
+
+  CourseRetrieverHandler:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: docprof-dev-course-retriever
+      CodeUri: src/lambda/course_retriever/
+      Handler: handler.lambda_handler
+      Role: !Ref LambdaExecutionRoleArn
+      Layers:
+        - !Ref PythonDepsLayerArn
+        - !Ref SharedCodeLayer
+      Events:
+        GetCourse:
+          Type: Api
+          Properties:
+            Path: /courses/{courseId}
+            Method: GET
+            RestApiId: !Ref DocProfApi
+
+  CourseStatusHandler:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: docprof-dev-course-status-handler
+      CodeUri: src/lambda/course_status_handler/
+      Handler: handler.lambda_handler
+      Role: !Ref LambdaExecutionRoleArn
+      Layers:
+        - !Ref PythonDepsLayerArn
+        - !Ref SharedCodeLayer
+      Events:
+        GetStatus:
+          Type: Api
+          Properties:
+            Path: /courses/{courseId}/status
+            Method: GET
+            RestApiId: !Ref DocProfApi
+
+  CourseDeleteHandler:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: docprof-dev-course-delete
+      CodeUri: src/lambda/course_delete/
+      Handler: handler.lambda_handler
+      Role: !Ref LambdaExecutionRoleArn
+      Layers:
+        - !Ref PythonDepsLayerArn
+        - !Ref SharedCodeLayer
+      Events:
+        DeleteCourse:
+          Type: Api
+          Properties:
+            Path: /courses/{courseId}
+            Method: DELETE
+            RestApiId: !Ref DocProfApi
+
+  CourseNextSectionHandler:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: docprof-dev-course-next-section
+      CodeUri: src/lambda/course_next_section/
+      Handler: handler.lambda_handler
+      Role: !Ref LambdaExecutionRoleArn
+      Layers:
+        - !Ref PythonDepsLayerArn
+        - !Ref SharedCodeLayer
+      Events:
+        GetNextSection:
+          Type: Api
+          Properties:
+            Path: /courses/{courseId}/next
+            Method: POST
+            RestApiId: !Ref DocProfApi
+
+  CourseStandaloneSectionHandler:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: docprof-dev-course-standalone-section
+      CodeUri: src/lambda/course_standalone_section/
+      Handler: handler.lambda_handler
+      Role: !Ref LambdaExecutionRoleArn
+      Layers:
+        - !Ref PythonDepsLayerArn
+        - !Ref SharedCodeLayer
+      Events:
+        GetStandaloneSection:
+          Type: Api
+          Properties:
+            Path: /courses/{courseId}/standalone
+            Method: POST
+            RestApiId: !Ref DocProfApi
+
+  # ============================================================================
+  # API Gateway
+  # Note: In hybrid approach, we reference existing API or create new one
+  # For now, using explicit RestApiId (passed from Terraform)
+  # ============================================================================
+  DocProfApi:
+    Type: AWS::Serverless::Api
+    Properties:
+      Name: docprof-dev-api-sam
+      StageName: dev
+      Cors:
+        AllowMethods: "'GET,POST,PUT,DELETE,OPTIONS'"
+        AllowHeaders: "'Content-Type,Authorization'"
+        AllowOrigin: "'*'"
+      Auth:
+        DefaultAuthorizer: CognitoAuthorizer
+        Authorizers:
+          CognitoAuthorizer:
+            UserPoolArn: !Sub 'arn:aws:cognito-idp:${AWS::Region}:${AWS::AccountId}:userpool/${CognitoUserPoolId}'
+      DefinitionBody:
+        swagger: '2.0'
+        info:
+          title: DocProf API
+          version: '1.0'
+        paths: {}  # SAM will generate from Events
+
+# Additional parameter for Cognito
+Parameters:
+  CognitoUserPoolId:
+    Type: String
+    Description: Cognito User Pool ID
+
+Outputs:
+  SharedCodeLayerArn:
+    Description: ARN of the shared code layer
+    Value: !Ref SharedCodeLayer
+    Export:
+      Name: !Sub '${AWS::StackName}-SharedCodeLayerArn'
+  
+  SharedCodeLayerVersion:
+    Description: Version of the shared code layer
+    Value: !GetAtt SharedCodeLayer.Version
+  
+  ApiEndpoint:
+    Description: API Gateway endpoint URL
+    Value: !Sub 'https://${DocProfApi}.execute-api.${AWS::Region}.amazonaws.com/dev'
+  
+  ApiId:
+    Description: API Gateway ID
+    Value: !Ref DocProfApi
+

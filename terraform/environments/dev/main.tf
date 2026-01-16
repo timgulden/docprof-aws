@@ -1684,14 +1684,13 @@ module "course_request_handler_lambda" {
 
   role_arn = module.iam.lambda_execution_role_arn
 
-  # Attach layers: Python dependencies + Shared code
+  # Attach layers: Python dependencies only (shared code is bundled)
   layers = [
-    module.lambda_layer.layer_arn,
-    module.shared_code_layer.layer_arn
+    module.lambda_layer.layer_arn
   ]
 
-  # Don't bundle shared code - use layer instead
-  bundle_shared_code = false
+  # Bundle shared code into function package (not using shared-code layer)
+  bundle_shared_code = true
 
   environment_variables = {
     DYNAMODB_COURSE_STATE_TABLE_NAME = module.dynamodb_course_state.table_name
@@ -1741,14 +1740,13 @@ module "course_retriever_lambda" {
 
   role_arn = module.iam.lambda_execution_role_arn
 
-  # Attach layers: Python dependencies + Shared code
+  # Attach layers: Python dependencies only (shared code is bundled)
   layers = [
-    module.lambda_layer.layer_arn,
-    module.shared_code_layer.layer_arn
+    module.lambda_layer.layer_arn
   ]
 
-  # Don't bundle shared code - use layer instead
-  bundle_shared_code = false
+  # Bundle shared code into function package (not using shared-code layer)
+  bundle_shared_code = true
 
   environment_variables = {
     DB_CLUSTER_ENDPOINT    = module.aurora.cluster_endpoint
@@ -1793,14 +1791,13 @@ module "courses_list_lambda" {
 
   role_arn = module.iam.lambda_execution_role_arn
 
-  # Attach layers: Python dependencies + Shared code
+  # Attach layers: Python dependencies only (shared code is bundled)
   layers = [
-    module.lambda_layer.layer_arn,
-    module.shared_code_layer.layer_arn
+    module.lambda_layer.layer_arn
   ]
 
-  # Don't bundle shared code - use layer instead
-  bundle_shared_code = false
+  # Bundle shared code into function package (not using shared-code layer)
+  bundle_shared_code = true
 
   environment_variables = {
     DB_CLUSTER_ENDPOINT    = module.aurora.cluster_endpoint
@@ -1845,14 +1842,13 @@ module "course_delete_lambda" {
 
   role_arn = module.iam.lambda_execution_role_arn
 
-  # Attach layers: Python dependencies + Shared code
+  # Attach layers: Python dependencies only (shared code is bundled)
   layers = [
-    module.lambda_layer.layer_arn,
-    module.shared_code_layer.layer_arn
+    module.lambda_layer.layer_arn
   ]
 
-  # Don't bundle shared code - use layer instead
-  bundle_shared_code = false
+  # Bundle shared code into function package (not using shared-code layer)
+  bundle_shared_code = true
 
   environment_variables = {
     DB_CLUSTER_ENDPOINT    = module.aurora.cluster_endpoint
@@ -1900,11 +1896,10 @@ module "course_next_section_lambda" {
   role_arn = module.iam.lambda_execution_role_arn
 
   layers = [
-    module.lambda_layer.layer_arn,
-    module.shared_code_layer.layer_arn
+    module.lambda_layer.layer_arn
   ]
 
-  bundle_shared_code = false
+  bundle_shared_code = true
 
   environment_variables = {
     DB_CLUSTER_ENDPOINT    = module.aurora.cluster_endpoint
@@ -1950,11 +1945,10 @@ module "course_standalone_section_lambda" {
   role_arn = module.iam.lambda_execution_role_arn
 
   layers = [
-    module.lambda_layer.layer_arn,
-    module.shared_code_layer.layer_arn
+    module.lambda_layer.layer_arn
   ]
 
-  bundle_shared_code = false
+  bundle_shared_code = true
 
   environment_variables = {
     DB_CLUSTER_ENDPOINT    = module.aurora.cluster_endpoint
@@ -1999,14 +1993,13 @@ module "course_outline_handler_lambda" {
 
   role_arn = module.iam.lambda_execution_role_arn
 
-  # Attach layers: Python dependencies + Shared code
+  # Attach layers: Python dependencies only (shared code is bundled)
   layers = [
-    module.lambda_layer.layer_arn,
-    module.shared_code_layer.layer_arn
+    module.lambda_layer.layer_arn
   ]
 
-  # Don't bundle shared code - use layer instead
-  bundle_shared_code = false
+  # Bundle shared code into function package (not using shared-code layer)
+  bundle_shared_code = true
 
   environment_variables = {
     DB_CLUSTER_ENDPOINT    = module.aurora.cluster_endpoint
@@ -2044,7 +2037,7 @@ module "section_lecture_handler_lambda" {
 
   handler     = "handler.lambda_handler"
   runtime     = "python3.11"
-  timeout     = 120 # Extended timeout for synchronous lecture generation (can take 30-60s)
+  timeout     = 600 # 10 minutes - needed for two-pass objective-by-objective generation
   memory_size = 512 # Increased memory for LLM calls
 
   source_path = "${path.module}/../../../src/lambda/section_lecture_handler"
@@ -2065,6 +2058,7 @@ module "section_lecture_handler_lambda" {
     DB_NAME                = module.aurora.database_name
     DB_MASTER_USERNAME     = module.aurora.master_username
     DB_PASSWORD_SECRET_ARN = module.aurora.master_password_secret_arn
+    AWS_ACCOUNT_ID         = data.aws_caller_identity.current.account_id
     # Fallback to Claude 3.5 Sonnet if Sonnet 4.5 hits daily token limits
     # Temporarily disabled for testing (no fallback; use primary model only)
     # LLM_FALLBACK_MODEL_ID = "arn:aws:bedrock:us-east-1:176520790264:inference-profile/us.anthropic.claude-3-5-sonnet-20240620-v1:0"
@@ -2212,14 +2206,13 @@ module "course_status_handler_lambda" {
 
   role_arn = module.iam.lambda_execution_role_arn
 
-  # Attach layers: Python dependencies + Shared code
+  # Attach layers: Python dependencies only (shared code is bundled)
   layers = [
-    module.lambda_layer.layer_arn,
-    module.shared_code_layer.layer_arn
+    module.lambda_layer.layer_arn
   ]
 
-  # Don't bundle shared code - use layer instead
-  bundle_shared_code = false
+  # Bundle shared code into function package (not using shared-code layer)
+  bundle_shared_code = true
 
   environment_variables = {
     DYNAMODB_COURSE_STATE_TABLE_NAME = module.dynamodb_course_state.table_name
@@ -2255,14 +2248,13 @@ module "course_embedding_handler_lambda" {
 
   role_arn = module.iam.lambda_execution_role_arn
 
-  # Attach layers: Python dependencies + Shared code
+  # Attach layers: Python dependencies only (shared code is bundled)
   layers = [
-    module.lambda_layer.layer_arn,
-    module.shared_code_layer.layer_arn
+    module.lambda_layer.layer_arn
   ]
 
-  # Don't bundle shared code - use layer instead
-  bundle_shared_code = false
+  # Bundle shared code into function package (not using shared-code layer)
+  bundle_shared_code = true
 
   environment_variables = {
     DYNAMODB_COURSE_STATE_TABLE_NAME = module.dynamodb_course_state.table_name
@@ -2311,14 +2303,13 @@ module "course_book_search_handler_lambda" {
 
   role_arn = module.iam.lambda_execution_role_arn
 
-  # Attach layers: Python dependencies + Shared code
+  # Attach layers: Python dependencies only (shared code is bundled)
   layers = [
-    module.lambda_layer.layer_arn,
-    module.shared_code_layer.layer_arn
+    module.lambda_layer.layer_arn
   ]
 
-  # Don't bundle shared code - use layer instead
-  bundle_shared_code = false
+  # Bundle shared code into function package (not using shared-code layer)
+  bundle_shared_code = true
 
   environment_variables = {
     DYNAMODB_COURSE_STATE_TABLE_NAME = module.dynamodb_course_state.table_name
@@ -2367,14 +2358,13 @@ module "course_parts_handler_lambda" {
 
   role_arn = module.iam.lambda_execution_role_arn
 
-  # Attach layers: Python dependencies + Shared code
+  # Attach layers: Python dependencies only (shared code is bundled)
   layers = [
-    module.lambda_layer.layer_arn,
-    module.shared_code_layer.layer_arn
+    module.lambda_layer.layer_arn
   ]
 
-  # Don't bundle shared code - use layer instead
-  bundle_shared_code = false
+  # Bundle shared code into function package (not using shared-code layer)
+  bundle_shared_code = true
 
   environment_variables = {
     DYNAMODB_COURSE_STATE_TABLE_NAME = module.dynamodb_course_state.table_name
@@ -2423,14 +2413,13 @@ module "course_sections_handler_lambda" {
 
   role_arn = module.iam.lambda_execution_role_arn
 
-  # Attach layers: Python dependencies + Shared code
+  # Attach layers: Python dependencies only (shared code is bundled)
   layers = [
-    module.lambda_layer.layer_arn,
-    module.shared_code_layer.layer_arn
+    module.lambda_layer.layer_arn
   ]
 
-  # Don't bundle shared code - use layer instead
-  bundle_shared_code = false
+  # Bundle shared code into function package (not using shared-code layer)
+  bundle_shared_code = true
 
   environment_variables = {
     DYNAMODB_COURSE_STATE_TABLE_NAME = module.dynamodb_course_state.table_name
@@ -2479,14 +2468,13 @@ module "course_outline_reviewer_lambda" {
 
   role_arn = module.iam.lambda_execution_role_arn
 
-  # Attach layers: Python dependencies + Shared code
+  # Attach layers: Python dependencies only (shared code is bundled)
   layers = [
-    module.lambda_layer.layer_arn,
-    module.shared_code_layer.layer_arn
+    module.lambda_layer.layer_arn
   ]
 
-  # Don't bundle shared code - use layer instead
-  bundle_shared_code = false
+  # Bundle shared code into function package (not using shared-code layer)
+  bundle_shared_code = true
 
   environment_variables = {
     DYNAMODB_COURSE_STATE_TABLE_NAME = module.dynamodb_course_state.table_name
@@ -2535,14 +2523,13 @@ module "course_storage_handler_lambda" {
 
   role_arn = module.iam.lambda_execution_role_arn
 
-  # Attach layers: Python dependencies + Shared code
+  # Attach layers: Python dependencies only (shared code is bundled)
   layers = [
-    module.lambda_layer.layer_arn,
-    module.shared_code_layer.layer_arn
+    module.lambda_layer.layer_arn
   ]
 
-  # Don't bundle shared code - use layer instead
-  bundle_shared_code = false
+  # Bundle shared code into function package (not using shared-code layer)
+  bundle_shared_code = true
 
   environment_variables = {
     DYNAMODB_COURSE_STATE_TABLE_NAME = module.dynamodb_course_state.table_name

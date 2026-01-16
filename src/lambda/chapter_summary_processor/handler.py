@@ -26,6 +26,7 @@ logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
 dynamodb = boto3.resource('dynamodb')
+eventbridge = boto3.client('events')
 
 
 def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
@@ -318,7 +319,6 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         
         # Publish event that this chapter is complete
         try:
-            eventbridge = boto3.client('events')
             event_bus_name = os.getenv('EVENT_BUS_NAME', '').strip() or None
             
             eventbridge.put_events(

@@ -1,4 +1,4 @@
-import { apiClient } from "./client";
+import { apiClient, withRetry } from "./client";
 import { cachePDF, getCachedPDF, getCachedPDFUrl, isCached } from "../utils/pdfCache";
 import type { 
   Book, 
@@ -14,9 +14,17 @@ import type {
 /**
  * Fetch all books from the database
  * Backend returns an array of books directly
+ * Uses retry logic to handle Aurora cold-start delays
  */
 export const fetchAllBooks = async (): Promise<Book[]> => {
-  const response = await apiClient.get<Book[]>("/books");
+  const response = await withRetry(
+    () => apiClient.get<Book[]>("/books"),
+    {
+      onRetry: (attempt) => {
+        console.log(`[Books] Database may be waking up, retrying in 3s... (attempt ${attempt + 1}/3)`);
+      }
+    }
+  );
   return response.data;
 };
 

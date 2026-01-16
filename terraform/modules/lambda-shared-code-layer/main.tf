@@ -15,14 +15,19 @@ locals {
 }
 
 # Create the python/shared directory structure
+# This resource triggers layer rebuild when shared code files change
+# To force rebuild manually: terraform taint module.shared_code_layer.null_resource.prepare_layer_structure
 resource "null_resource" "prepare_layer_structure" {
   triggers = {
+    # Hash all shared code files to detect changes
     shared_code_hash = sha256(jsonencode([
-      for f in local.shared_files : {
+      for f in sort(local.shared_files) : {  # Sort for consistency
         path = f
         hash = fileexists("${var.shared_code_path}/${f}") ? filesha256("${var.shared_code_path}/${f}") : ""
       }
     ]))
+    # Optional: Set this to current timestamp to force rebuild
+    # manual_trigger = var.force_rebuild ? timestamp() : "stable"
   }
 
   # Create directory structure
@@ -89,6 +94,8 @@ resource "aws_s3_object" "layer_zip" {
 }
 
 # Lambda Layer for shared application code
+# A new version is automatically created when source_code_hash changes
+# This happens when any shared code file is modified
 resource "aws_lambda_layer_version" "shared_code" {
   layer_name          = local.layer_name
   compatible_runtimes = var.compatible_runtimes
@@ -98,8 +105,13 @@ resource "aws_lambda_layer_version" "shared_code" {
   s3_bucket = aws_s3_object.layer_zip.bucket
   s3_key    = aws_s3_object.layer_zip.key
 
+  # This hash triggers new layer version when shared code changes
   source_code_hash = data.archive_file.layer_zip.output_base64sha256
 
   depends_on = [aws_s3_object.layer_zip]
+  
+  lifecycle {
+    create_before_destroy = true
+  }
 }
 

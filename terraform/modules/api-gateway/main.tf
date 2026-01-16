@@ -22,9 +22,24 @@ resource "aws_api_gateway_rest_api" "this" {
 }
 
 # API Gateway Deployment
+# This deployment is automatically recreated when Lambda integrations or methods change
 resource "aws_api_gateway_deployment" "this" {
   rest_api_id = aws_api_gateway_rest_api.this.id
-  stage_name  = var.environment
+
+  # Trigger new deployment when integrations change
+  # This ensures API Gateway picks up Lambda function updates
+  triggers = {
+    # Hash all integration URIs to detect Lambda function changes
+    integrations = sha256(jsonencode([
+      for k, v in aws_api_gateway_integration.this : {
+        uri    = v.uri
+        method = v.http_method
+      }
+    ]))
+    # Include timestamp to force redeployment if needed
+    # Comment this out in production to avoid unnecessary redeployments
+    # redeployment = timestamp()
+  }
 
   depends_on = [
     aws_api_gateway_method.this,
@@ -43,14 +58,15 @@ resource "aws_api_gateway_deployment" "this" {
 }
 
 # API Gateway Stage
+# This stage now automatically picks up new deployments
 resource "aws_api_gateway_stage" "this" {
   deployment_id = aws_api_gateway_deployment.this.id
   rest_api_id  = aws_api_gateway_rest_api.this.id
   stage_name   = var.environment
   
-  lifecycle {
-    ignore_changes = [deployment_id]
-  }
+  # REMOVED: ignore_changes = [deployment_id]
+  # This was preventing automatic redeployment when Lambda functions changed
+  # Now the stage will update whenever a new deployment is created
 
   access_log_settings {
     destination_arn = aws_cloudwatch_log_group.api_gateway.arn

@@ -282,3 +282,6 @@ terraform plan -target=module.course_request_handler_lambda.aws_lambda_function.
 5. ⏳ **Test end-to-end** - Verify course generation works
 
 
+
+
+

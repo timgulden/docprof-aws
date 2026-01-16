@@ -54,6 +54,14 @@ def generate_embedding_for_summary(summary_json: dict) -> List[float]:
     # Combine into single text
     summary_text = "\n".join(text_parts)
     
+    # CRITICAL: Truncate to fit Titan's 8,192 token limit
+    # Rough estimate: 4 chars per token, so 32k chars = ~8k tokens
+    # Be conservative and use 30k chars to stay well under the limit
+    MAX_CHARS = 30000
+    if len(summary_text) > MAX_CHARS:
+        logger.warning(f"Summary text too long ({len(summary_text)} chars), truncating to {MAX_CHARS}")
+        summary_text = summary_text[:MAX_CHARS]
+    
     # Generate embedding using Bedrock Titan
     embeddings = generate_embeddings([summary_text])
     return embeddings[0] if embeddings else [0.0] * 1536
@@ -98,7 +106,7 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                         FROM source_summaries
                         WHERE book_id = %s
                         AND embedding IS NULL
-                        ORDER BY version DESC
+                        ORDER BY generated_at DESC
                         LIMIT 1
                     """, (source_id,))
                     summaries = cur.fetchall()
@@ -132,7 +140,7 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                         else:
                             summary_data = summary_json
                         
-                        # Generate embedding
+                        # Generate embedding (with truncation for 50k char limit)
                         embedding = generate_embedding_for_summary(summary_data)
                         
                         # Update database

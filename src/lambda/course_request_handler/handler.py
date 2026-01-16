@@ -72,6 +72,14 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         course_id = str(uuid4())  # Generate course ID (session_id)
         course_state.session_id = course_id
         
+        # Extract and store user_id in state (from Cognito token)
+        user_id = extract_user_id(event)
+        if not user_id:
+            logger.warning("No user_id found - generating fallback UUID")
+            user_id = str(uuid4())  # Fallback if Cognito token not present
+        course_state.user_id = user_id
+        logger.info(f"Course state initialized: course_id={course_id}, user_id={user_id}")
+        
         # Create course request event
         course_event = CourseRequestedEvent(
             query=query,
@@ -105,11 +113,9 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                 logger.info(f"Saved initial course state: {course_id}")
                 
                 # Save basic course record to PostgreSQL immediately so outline endpoint works
-                # Extract user_id from event (Cognito token)
-                user_id = extract_user_id(event)
-                if user_id:
-                    save_initial_course_record(course_id, user_id, query, hours, preferences_dict)
-                    logger.info(f"Saved initial course record to PostgreSQL: {course_id}")
+                # Use user_id already stored in state
+                save_initial_course_record(course_id, user_id, query, hours, preferences_dict)
+                logger.info(f"Saved initial course record to PostgreSQL: {course_id}")
                 
                 # Publish EmbeddingGeneratedEvent to EventBridge to continue async pipeline
                 publish_embedding_generated_event(course_id, embedding)
@@ -138,10 +144,9 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
             save_course_state(course_id, current_state)
             
             # Save basic course record to PostgreSQL immediately
-            user_id = extract_user_id(event)
-            if user_id:
-                save_initial_course_record(course_id, user_id, query, hours, preferences_dict)
-                logger.info(f"Saved initial course record to PostgreSQL (fallback): {course_id}")
+            # Use user_id already stored in state
+            save_initial_course_record(course_id, user_id, query, hours, preferences_dict)
+            logger.info(f"Saved initial course record to PostgreSQL (fallback): {course_id}")
             
             publish_course_requested_event(course_id, query, float(hours), preferences_dict)
             return success_response({

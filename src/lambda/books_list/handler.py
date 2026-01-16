@@ -18,7 +18,9 @@ logger.setLevel(logging.INFO)
 def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     """
     Handle GET /books request to fetch all books.
+    Also supports PATCH operations for updating book metadata.
     
+    For GET:
     Returns list of books with:
     - book_id (UUID as string)
     - title
@@ -29,13 +31,99 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     - ingestion_date
     - created_at
     - metadata
+    
+    For PATCH (update_metadata action):
+    Body: {
+        "action": "update_metadata",
+        "book_id": "uuid",
+        "title": "...",
+        "author": "...",
+        "edition": "..."
+    }
     """
     try:
+        # Check if this is an update request
+        if event.get('action') == 'update_metadata':
+            return update_book_metadata(event)
+        
+        # Otherwise, fetch all books
         books = fetch_all_books()
         return success_response(books)
     except Exception as e:
-        logger.error(f"Error fetching books: {e}", exc_info=True)
-        return error_response(f"Failed to fetch books: {str(e)}", 500)
+        logger.error(f"Error handling request: {e}", exc_info=True)
+        return error_response(f"Failed to process request: {str(e)}", 500)
+
+
+def update_book_metadata(event: Dict[str, Any]) -> Dict[str, Any]:
+    """Update metadata for a specific book."""
+    book_id = event.get('book_id')
+    title = event.get('title')
+    author = event.get('author')
+    edition = event.get('edition')
+    
+    if not book_id:
+        return error_response("book_id is required", 400)
+    
+    logger.info(f"Updating metadata for book {book_id}")
+    logger.info(f"  Title: {title}")
+    logger.info(f"  Author: {author}")
+    logger.info(f"  Edition: {edition}")
+    
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                # Build UPDATE query dynamically based on provided fields
+                update_fields = []
+                params = []
+                
+                if title is not None:
+                    update_fields.append("title = %s")
+                    params.append(title)
+                
+                if author is not None:
+                    update_fields.append("author = %s")
+                    params.append(author)
+                
+                if edition is not None:
+                    update_fields.append("edition = %s")
+                    params.append(edition)
+                
+                if not update_fields:
+                    return error_response("No fields to update", 400)
+                
+                # Add book_id to params
+                params.append(book_id)
+                
+                query = f"""
+                    UPDATE books
+                    SET {', '.join(update_fields)}
+                    WHERE book_id = %s
+                    RETURNING book_id, title, author, edition, total_pages
+                """
+                
+                cur.execute(query, params)
+                result = cur.fetchone()
+                
+                if not result:
+                    return error_response(f"Book {book_id} not found", 404)
+                
+                updated_book = {
+                    'book_id': str(result[0]),
+                    'title': result[1],
+                    'author': result[2],
+                    'edition': result[3],
+                    'total_pages': result[4]
+                }
+                
+                logger.info(f"Successfully updated book {book_id}")
+                return success_response({
+                    'message': 'Book metadata updated successfully',
+                    'book': updated_book
+                })
+                
+    except Exception as e:
+        logger.error(f"Error updating book metadata: {e}", exc_info=True)
+        return error_response(f"Failed to update book metadata: {str(e)}", 500)
 
 
 def fetch_all_books() -> List[Dict[str, Any]]:

@@ -132,5 +132,6 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         }
         
     except Exception as e:
-        logger.error(f"Error deleting course {course_id}: {e}", exc_info=True)
+        course_id_str = course_id if 'course_id' in locals() else 'unknown'
+        logger.error(f"Error deleting course {course_id_str}: {e}", exc_info=True)
         return error_response(500, f"Failed to delete course: {str(e)}")

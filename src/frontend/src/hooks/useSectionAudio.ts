@@ -74,7 +74,9 @@ export const useSectionAudio = ({
   useEffect(() => {
     if (!sectionId) return;
     
-    if (!preloadedChunkBlobs.current.has(0) && !preloadingChunks.current.has(0)) {
+    // Audio chunks not yet implemented in AWS - skip preloading
+    // This will be re-enabled when TTS is implemented
+    if (false && !preloadedChunkBlobs.current.has(0) && !preloadingChunks.current.has(0)) {
       preloadingChunks.current.add(0);
       const chunk0Url = getSectionAudioChunkUrl(sectionId, 0);
       console.log("🚀 Preloading chunk 1 immediately (before metadata)...");
@@ -97,10 +99,14 @@ export const useSectionAudio = ({
   }, [sectionId]);
   
   // Retry preloading chunk 0 when metadata loads
+  // DISABLED: Audio chunks not yet implemented in AWS
   useEffect(() => {
     if (!chunkMetadata || chunkMetadata.length === 0) return;
     
-    if (!preloadedChunkBlobs.current.has(0) && !preloadingChunks.current.has(0)) {
+    // Audio chunks not yet implemented - skip
+    return;
+    
+    if (false && !preloadedChunkBlobs.current.has(0) && !preloadingChunks.current.has(0)) {
       preloadingChunks.current.add(0);
       const chunk0Url = getSectionAudioChunkUrl(sectionId, 0);
       console.log("Preloading chunk 1 as blob (retry after metadata load)...");

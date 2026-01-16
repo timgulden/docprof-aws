@@ -1,4 +1,4 @@
-import { apiClient } from "./client";
+import { apiClient, withRetry } from "./client";
 import type {
   Course,
   CourseOutline,
@@ -161,14 +161,21 @@ export const listCourses = async (): Promise<Array<{
   status: string;
   createdAt?: string;
 }>> => {
-  const response = await apiClient.get<Array<{
-    courseId: string;
-    course_id: string;
-    title: string;
-    estimatedHours: number;
-    status: string;
-    createdAt?: string;
-  }>>("/courses");
+  const response = await withRetry(
+    () => apiClient.get<Array<{
+      courseId: string;
+      course_id: string;
+      title: string;
+      estimatedHours: number;
+      status: string;
+      createdAt?: string;
+    }>>("/courses"),
+    {
+      onRetry: (attempt) => {
+        console.log(`[Courses] Database may be waking up, retrying in 3s... (attempt ${attempt + 1}/3)`);
+      }
+    }
+  );
   return response.data.map(course => ({
     courseId: course.courseId || course.course_id,
     title: course.title,
@@ -185,18 +192,31 @@ export const deleteCourse = async (courseId: string): Promise<void> => {
 export const createCourse = async (
   request: CreateCourseRequest,
 ): Promise<CreateCourseResponse> => {
-  const response = await apiClient.post<CreateCourseResponse>("/courses/create", {
-    query: request.query,
-    time_hours: request.timeHours,
-    // Note: preferences removed - style selected at lecture generation time
-  });
+  const response = await apiClient.post<CreateCourseResponse>(
+    "/courses",
+    {
+      query: request.query,
+      time_hours: request.timeHours,
+      // Note: preferences removed - style selected at lecture generation time
+    },
+    {
+      timeout: 30000, // 30 second timeout - course creation should be fast (~500ms)
+    }
+  );
   return response.data;
 };
 
 export const getCourseOutline = async (courseId: string): Promise<CourseOutline> => {
-  const response = await apiClient.get<RawCourseOutline>(`/courses/${courseId}/outline`, {
-    timeout: 10000, // 10 second timeout for outline (should be fast, but has more data than status)
-  });
+  const response = await withRetry(
+    () => apiClient.get<RawCourseOutline>(`/courses/${courseId}/outline`, {
+      timeout: 10000, // 10 second timeout for outline (should be fast, but has more data than status)
+    }),
+    {
+      onRetry: (attempt) => {
+        console.log(`[Course Outline] Database may be waking up, retrying in 3s... (attempt ${attempt + 1}/3)`);
+      }
+    }
+  );
   return normalizeOutline(response.data);
 };
 
@@ -266,6 +286,41 @@ export const regenerateSectionLecture = async (
     { timeout: 600000 } // 10 minutes for regeneration
   );
   // No return value needed, just wait for completion
+};
+
+export const getCourseStatus = async (courseId: string): Promise<{
+  course_id: string;
+  status: "processing" | "complete" | "error";
+  phase: "initializing" | "searching_books" | "generating_sections" | "reviewing_outline" | "storing_sections" | "complete";
+  progress: Record<string, any>;
+  query?: string;
+  hours?: number;
+  error?: string;
+  message?: string;
+}> => {
+  const response = await apiClient.get<{
+    course_id: string;
+    status: string;
+    phase: string;
+    progress: Record<string, any>;
+    query?: string;
+    hours?: number;
+    error?: string;
+    message?: string;
+  }>(`/course-status/${courseId}`, {
+    timeout: 5000, // 5 second timeout for status (should be very fast)
+  });
+  
+  return {
+    course_id: response.data.course_id,
+    status: response.data.status as "processing" | "complete" | "error",
+    phase: response.data.phase as "initializing" | "searching_books" | "generating_sections" | "reviewing_outline" | "complete",
+    progress: response.data.progress,
+    query: response.data.query,
+    hours: response.data.hours,
+    error: response.data.error,
+    message: response.data.message,
+  };
 };
 
 export const getGenerationStatus = async (sectionId: string): Promise<{

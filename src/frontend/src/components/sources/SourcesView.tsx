@@ -97,9 +97,14 @@ export const SourcesView = () => {
   if (isLoading) {
     return (
       <div className="flex h-full items-center justify-center">
-        <div className="flex items-center space-x-2 text-slate-600">
-          <Loader2 className="h-6 w-6 animate-spin" />
-          <span>Loading books...</span>
+        <div className="flex flex-col items-center space-y-3 text-slate-600">
+          <div className="flex items-center space-x-2">
+            <Loader2 className="h-6 w-6 animate-spin" />
+            <span>Loading books...</span>
+          </div>
+          <p className="text-xs text-slate-500">
+            If database is waking up, this may take up to 30 seconds
+          </p>
         </div>
       </div>
     );
@@ -111,6 +116,9 @@ export const SourcesView = () => {
         <div className="text-center">
           <p className="text-lg font-semibold text-red-600">Error loading books</p>
           <p className="mt-2 text-sm text-slate-600">{(error as Error).message}</p>
+          <p className="mt-2 text-xs text-slate-500">
+            Database may be starting up. Please try again in a moment.
+          </p>
           <button
             onClick={() => refetch()}
             className="mt-4 rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700"

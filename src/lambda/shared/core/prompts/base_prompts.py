@@ -185,17 +185,21 @@ Variance: {variance_percent:.1f}%
 Your task: Review and adjust the outline to match the target time more precisely.
 
 Requirements:
-- If the total is off by more than 5%, make adjustments
-- You may:
-  * Adjust section time allocations (lengthen or shorten individual sections)
-  * Add sections if significantly under target
-  * Remove or consolidate sections if significantly over target
-  * Adjust part time allocations if needed
+- If the current total ({current_total} min) is within 5% of the target ({target_total} min), make NO changes - just output the outline as-is
+- If the total is off by more than 5%, make MINIMAL adjustments:
+  * If UNDER target: Add new sections or lengthen existing sections to reach the target
+  * If OVER target: Remove sections or shorten existing sections to reach the target
+  * Adjust section times proportionally across all parts
 - Maintain the quality and logical flow of the course
 - Ensure all adjustments serve the overall learning objective
 - The final total must be within 5% of {target_total} minutes (between {min_acceptable} and {max_acceptable} minutes)
 
-Output the complete revised outline in the same format, with all adjustments clearly made.""",
+CRITICAL OUTPUT REQUIREMENTS:
+1. Output ONLY the complete revised outline in the EXACT SAME FORMAT as the input
+2. Do NOT include any summary, explanation, commentary, or notes about changes
+3. Do NOT add a "changes made" section at the end
+4. The outline must end with the last section's learning objectives and the total time for that part
+5. Every section MUST include its time allocation (e.g., "Section Title - 15 minutes")""",
 
     # Course Generation - Legacy Single-Step Outline Generation
     "courses.generate_outline": """Generate a structured course outline based on the user's request.
@@ -277,17 +281,26 @@ Delivery Preferences:
 
 {style_instruction}
 
+=== CRITICAL: USE SOURCE MATERIAL EXTENSIVELY ===
+This lecture MUST draw heavily from the Source Material above. Do not generate generic content - instead:
+- Quote key definitions and concepts directly from the sources
+- Reference specific examples, cases, and data from the source material
+- Cite book/chapter names when introducing key ideas (e.g., "As discussed in [book title]...")
+- Use multiple sources per topic when available to provide depth and varied perspectives
+- Include specific numbers, dates, and facts from the sources rather than generalities
+- The more source material you incorporate naturally, the better the lecture
+
 Create a {estimated_minutes}-minute lecture that:
 1. **STARTS with an introductory paragraph** that:
    - Summarizes the section topic ({section_title}) in narrative form
    - Restates all learning objectives naturally as part of the narrative, using the current presentation style
    - Sets the context and expectations for what will be covered
    - This introductory paragraph should be the FIRST paragraph of the lecture
-2. **Incorporates material from multiple sources** - Draw examples, concepts, and insights from different sources
-3. Addresses all learning objectives
+2. **EXTENSIVELY incorporates the Source Material** - Draw examples, concepts, definitions, data, and insights from ALL provided sources. Don't leave source material unused.
+3. Addresses all learning objectives with specific content from sources
 4. Matches the style preferences
 5. References (but doesn't repeat) previously covered material
-6. Uses concrete examples from the source material
+6. Uses concrete examples directly from the source material - not made-up examples
 7. Maintains conversational flow appropriate for audio delivery
 8. Includes smooth transitions between concepts
 
@@ -327,17 +340,25 @@ Estimated Time: {estimated_minutes} minutes
 - Pace: {pace}
 {additional_notes_section}
 
+=== CRITICAL: USE SOURCE MATERIAL EXTENSIVELY ===
+This content MUST draw heavily from the Source Material above. Do not generate generic content:
+- Quote key definitions, formulas, and concepts directly from sources
+- Reference specific examples, data, cases, and facts from the material
+- Cite sources naturally when introducing ideas (e.g., "According to [book]..." or "As explained in [chapter]...")
+- Use ALL relevant source material provided - don't leave valuable content unused
+- Include specific numbers, dates, and technical details rather than vague generalities
+- The more source material you weave in naturally, the richer and more valuable the lecture
+
 === INSTRUCTIONS ===
 Generate lecture content that:
 1. **MUST follow the Presentation Style above in every aspect** - this is critical for consistency
-2. **Incorporates material from multiple sources** - Draw examples, concepts, and insights from different sources
-3. Covers the specific objective listed above thoroughly
-4. Uses the provided source material
-5. References (but doesn't repeat) content from previous sections
-6. Fits naturally with the current draft (if any)
-7. Uses concrete examples from the source material
-8. Maintains the prescribed style and tone throughout - do not default to a generic academic tone
-9. Maintains conversational flow appropriate for audio delivery (if style allows)
+2. **EXTENSIVELY uses Source Material** - Draw examples, concepts, definitions, data, and facts from ALL sources. Each paragraph should incorporate source content.
+3. Covers the specific objective thoroughly with content directly from sources
+4. References (but doesn't repeat) content from previous sections
+5. Fits naturally with the current draft (if any)
+6. Uses concrete examples DIRECTLY from the source material - not made-up examples
+7. Maintains the prescribed style and tone throughout - do not default to a generic academic tone
+8. Maintains conversational flow appropriate for audio delivery (if style allows)
 
 The presentation style is not optional - it must be applied to this objective's content from the very first sentence.
 
