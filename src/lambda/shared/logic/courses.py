@@ -1069,12 +1069,11 @@ def parse_text_outline_to_database(
             section_order += 1
     
     # Update state with course
+    # NOTE: Do NOT clear pending_course_* fields yet! They're needed if this step fails
+    # and needs to be retried. They'll be cleared by the storage handler after successful save.
     new_state = state.model_copy(
         update={
             "current_course": course,
-            "pending_course_query": None,
-            "pending_course_hours": None,
-            "pending_course_prefs": None,
             "pending_outline_generation": False,
             "outline_complete": True,
         }
@@ -1368,12 +1367,10 @@ def store_course_outline(
                 logger.debug(f"Revision: Created child section '{section.title}' with parent={parent_real_id}")
         
         # Store new sections in state so they can be used when deleting old ones
+        # NOTE: Do NOT clear pending_course_* fields - they're needed for retry scenarios
         new_state = state.model_copy(
             update={
                 "current_course": course,
-                "pending_course_query": None,
-                "pending_course_hours": None,
-                "pending_course_prefs": None,
                 "pending_outline_generation": False,
                 "pending_revision_completed_section_ids": completed_section_ids,  # Keep for deletion step
                 "pending_revision_new_sections": sections,  # Store new sections for creation
@@ -1434,12 +1431,10 @@ def store_course_outline(
             sections.append(section)
         
         # Update state with new course
+        # NOTE: Do NOT clear pending_course_* fields - they're needed for retry scenarios
         new_state = state.model_copy(
             update={
                 "current_course": course,
-                "pending_course_query": None,
-                "pending_course_hours": None,
-                "pending_course_prefs": None,
                 "pending_outline_generation": False,
             }
         )
