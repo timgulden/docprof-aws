@@ -26,6 +26,7 @@ export const SimpleLectureHighlight = ({
   const containerRef = useRef<HTMLDivElement>(null);
   const scrollContainerRef = useRef<HTMLElement | null>(null);
   const currentWordRef = useRef<HTMLSpanElement | null>(null);
+  const offsetRef = useRef<number>(0);
 
   // Get word marks for click handling
   const wordMarks = useMemo(
@@ -61,6 +62,46 @@ export const SimpleLectureHighlight = ({
     };
   }, [lectureScript]);
 
+  const normalizedText = useMemo(() => {
+    return lectureScript
+      .replace(/\u00a0/g, " ")
+      .replace(/[’‘]/g, "'")
+      .replace(/[–—]/g, "-");
+  }, [lectureScript]);
+
+  const findNearestMatch = useMemo(() => {
+    return (value: string, expectedIndex: number, window: number) => {
+      if (!value) return null;
+      const variants = [
+        value,
+        value.replace(/\u00a0/g, " ").replace(/[’‘]/g, "'").replace(/[–—]/g, "-"),
+      ];
+      const texts = [lectureScript, normalizedText];
+
+      let bestIndex: number | null = null;
+      let bestDelta = Number.POSITIVE_INFINITY;
+
+      for (const text of texts) {
+        for (const v of variants) {
+          let start = Math.max(0, expectedIndex - window);
+          const end = Math.min(text.length, expectedIndex + window);
+          while (start <= end) {
+            const found = text.indexOf(v, start);
+            if (found === -1 || found > end) break;
+            const delta = Math.abs(found - expectedIndex);
+            if (delta < bestDelta) {
+              bestDelta = delta;
+              bestIndex = found;
+            }
+            start = found + 1;
+          }
+        }
+      }
+
+      return bestIndex;
+    };
+  }, [lectureScript, normalizedText]);
+
   // Find the scrollable parent container on mount
   useEffect(() => {
     if (!containerRef.current) return;
@@ -84,6 +125,7 @@ export const SimpleLectureHighlight = ({
     if (!isPlaying) {
       container.textContent = lectureScript;
       currentWordRef.current = null;
+      offsetRef.current = 0;
       return;
     }
 
@@ -93,10 +135,46 @@ export const SimpleLectureHighlight = ({
       return offsetMap.byteToChar[clamped] ?? lectureScript.length;
     };
 
-    const sentenceStart = mapIndex(highlightPosition.currentSentence?.start);
-    const sentenceEnd = mapIndex(highlightPosition.currentSentence?.end);
-    const wordStart = mapIndex(highlightPosition.currentWord?.start);
-    const wordEnd = mapIndex(highlightPosition.currentWord?.end);
+    const rawSentenceStart = mapIndex(highlightPosition.currentSentence?.start);
+    const rawSentenceEnd = mapIndex(highlightPosition.currentSentence?.end);
+    const rawWordStart = mapIndex(highlightPosition.currentWord?.start);
+    const rawWordEnd = mapIndex(highlightPosition.currentWord?.end);
+
+    let sentenceStart = rawSentenceStart;
+    let sentenceEnd = rawSentenceEnd;
+    let wordStart = rawWordStart;
+    let wordEnd = rawWordEnd;
+
+    // Refine offset using current word value if mismatch detected
+    if (
+      highlightPosition.currentWord &&
+      rawWordStart !== undefined &&
+      rawWordEnd !== undefined
+    ) {
+      const expected = rawWordStart + offsetRef.current;
+      const expectedEnd = rawWordEnd + offsetRef.current;
+      const slice = lectureScript.substring(
+        Math.max(0, expected),
+        Math.min(lectureScript.length, expectedEnd)
+      );
+
+      if (slice !== highlightPosition.currentWord.value) {
+        const matchIndex = findNearestMatch(
+          highlightPosition.currentWord.value,
+          rawWordStart,
+          80
+        );
+        if (matchIndex !== null) {
+          offsetRef.current = matchIndex - rawWordStart;
+        }
+      }
+    }
+
+    const offset = offsetRef.current;
+    if (sentenceStart !== undefined) sentenceStart += offset;
+    if (sentenceEnd !== undefined) sentenceEnd += offset;
+    if (wordStart !== undefined) wordStart += offset;
+    if (wordEnd !== undefined) wordEnd += offset;
 
     if (sentenceStart === undefined && wordStart === undefined) {
       container.textContent = lectureScript;
@@ -154,6 +232,7 @@ export const SimpleLectureHighlight = ({
     highlightPosition.currentSentence,
     highlightPosition.currentWord,
     offsetMap,
+    findNearestMatch,
   ]);
 
   // Auto-scroll to keep current word visible
@@ -201,8 +280,9 @@ export const SimpleLectureHighlight = ({
     
     if (clickedChar < 0) return;
     
+    const adjustedChar = Math.max(0, clickedChar - offsetRef.current);
     const clickedByte = offsetMap.charToByte[
-      Math.min(clickedChar, offsetMap.charToByte.length - 1)
+      Math.min(adjustedChar, offsetMap.charToByte.length - 1)
     ];
 
     // Find which word was clicked

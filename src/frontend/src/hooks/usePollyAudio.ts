@@ -67,6 +67,7 @@ export const usePollyAudio = ({
   const [audioAvailable, setAudioAvailable] = useState(false);
   const [audioDuration, setAudioDuration] = useState(0);
   const [currentTime, setCurrentTime] = useState(0);
+  const [markTimeScale, setMarkTimeScale] = useState(1);
   
   // Speech marks state
   const [speechMarks, setSpeechMarks] = useState<SpeechMark[]>([]);
@@ -90,6 +91,20 @@ export const usePollyAudio = ({
     wordMarksRef.current = speechMarks.filter(m => m.type === 'word');
     sentenceMarksRef.current = speechMarks.filter(m => m.type === 'sentence');
   }, [speechMarks]);
+
+  // Compute time scale factor to align marks with actual audio duration
+  useEffect(() => {
+    if (!audioDuration || speechMarks.length === 0) {
+      setMarkTimeScale(1);
+      return;
+    }
+    const lastMarkTime = speechMarks[speechMarks.length - 1]?.time || 0;
+    if (lastMarkTime > 0) {
+      setMarkTimeScale(audioDuration / lastMarkTime);
+    } else {
+      setMarkTimeScale(1);
+    }
+  }, [audioDuration, speechMarks]);
   
   // Clean up blob URL on unmount
   useEffect(() => {
@@ -149,8 +164,8 @@ export const usePollyAudio = ({
    * Called on every time update for smooth tracking.
    */
   const updateHighlightPosition = useCallback((timeMs: number) => {
-    // Adjust time for playback speed
-    const adjustedTime = timeMs;
+    // Adjust time to compensate for mark/audio duration drift
+    const adjustedTime = markTimeScale !== 0 ? timeMs / markTimeScale : timeMs;
     
     const wordResult = findMarkAtTime(wordMarksRef.current, adjustedTime);
     const sentenceResult = findMarkAtTime(sentenceMarksRef.current, adjustedTime);
@@ -162,7 +177,7 @@ export const usePollyAudio = ({
       sentenceIndex: sentenceResult.index,
       timeMs: adjustedTime,
     });
-  }, [findMarkAtTime]);
+  }, [findMarkAtTime, markTimeScale]);
   
   /**
    * Load audio and speech marks from API.
