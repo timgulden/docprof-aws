@@ -806,3 +806,134 @@ export const reviseCourseOutline = async (
   return response.data;
 };
 
+/**
+ * Speech mark for word-level text-audio synchronization.
+ * Provided by AWS Polly for precise highlighting during playback.
+ */
+export interface SpeechMark {
+  time: number;        // Milliseconds from start of audio
+  type: 'word' | 'sentence' | 'ssml' | 'viseme';
+  start: number;       // Byte offset in input text
+  end: number;         // Byte offset in input text (exclusive)
+  value: string;       // The word/sentence text
+  chunk_index?: number; // Which audio chunk this belongs to (for multi-chunk lectures)
+}
+
+/**
+ * Response from speech marks endpoint.
+ */
+export interface SpeechMarksResponse {
+  section_id: string;
+  marks: SpeechMark[];
+  mark_count: number;
+  cached: boolean;
+}
+
+/**
+ * Get speech marks (timing data) for a section lecture.
+ * 
+ * Speech marks provide millisecond-level timing for each word,
+ * enabling word-level text highlighting during audio playback.
+ * 
+ * @param sectionId - The section ID
+ * @returns Speech marks with timing data
+ */
+export const getSectionSpeechMarks = async (sectionId: string): Promise<SpeechMarksResponse> => {
+  const response = await apiClient.get<SpeechMarksResponse>(
+    `/courses/section/${sectionId}/speech-marks`,
+    {
+      timeout: 180000, // 3 minutes - may need to generate audio first
+    }
+  );
+  
+  return response.data;
+};
+
+/**
+ * Get audio URL for a section lecture using AWS Polly.
+ * Audio is generated on-demand if not cached.
+ * 
+ * @param sectionId - The section ID
+ * @returns Presigned S3 URL for audio playback
+ */
+export const getSectionPollyAudioUrl = async (sectionId: string): Promise<string> => {
+  const response = await apiClient.get<{ audio_url: string; section_id: string; cached: boolean }>(
+    `/courses/section/${sectionId}/audio`,
+    {
+      timeout: 180000, // 3 minutes - may need to generate
+    }
+  );
+  
+  return response.data.audio_url;
+};
+
+/**
+ * Get audio and speech marks together (more efficient for initial load).
+ * Returns both the audio URL (presigned S3 URL) and speech marks in a single coordinated fetch.
+ */
+export const getSectionAudioWithMarks = async (sectionId: string): Promise<{
+  audioUrl: string;
+  marks: SpeechMark[];
+}> => {
+  const maxAttempts = 4;
+  const retryDelayMs = 5000;
+
+  const shouldRetry = (error: any) => {
+    const status = error?.response?.status;
+    return status === 502 || status === 504 || status === 202;
+  };
+
+  const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+
+  const fetchAudio = async () => {
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        const response = await apiClient.get<{ audio_url: string; section_id: string; cached: boolean }>(
+          `/courses/section/${sectionId}/audio`,
+          { timeout: 180000 }
+        );
+        if (!response.data?.audio_url) {
+          throw new Error("Audio URL missing from response");
+        }
+        return response;
+      } catch (error: any) {
+        if (attempt < maxAttempts && shouldRetry(error)) {
+          await sleep(retryDelayMs);
+          continue;
+        }
+        throw error;
+      }
+    }
+    throw new Error("Failed to load audio after retries");
+  };
+
+  const fetchMarks = async () => {
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        const response = await apiClient.get<SpeechMarksResponse>(
+          `/courses/section/${sectionId}/speech-marks`,
+          { timeout: 180000 }
+        );
+        if (!response.data?.marks) {
+          throw new Error("Speech marks missing from response");
+        }
+        return response;
+      } catch (error: any) {
+        if (attempt < maxAttempts && shouldRetry(error)) {
+          await sleep(retryDelayMs);
+          continue;
+        }
+        throw error;
+      }
+    }
+    throw new Error("Failed to load speech marks after retries");
+  };
+
+  const [audioResponse, marksResponse] = await Promise.all([fetchAudio(), fetchMarks()]);
+
+  return {
+    audioUrl: audioResponse.data.audio_url,
+    marks: marksResponse.data.marks,
+  };
+};
+

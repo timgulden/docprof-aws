@@ -1,0 +1,5 @@
+# Section Audio Handler dependencies
+# Most AWS SDKs are available in Lambda runtime, but we include explicitly for local dev
+
+boto3>=1.26.0
+psycopg2-binary>=2.9.0

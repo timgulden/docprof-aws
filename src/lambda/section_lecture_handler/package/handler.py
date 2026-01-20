@@ -320,6 +320,8 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                      duration_actual, user_notes, style_snapshot) = delivery_row
                     
                     logger.info(f"✓ Lecture found for section {section_id_db}, returning it")
+                    # Normalize line endings for consistent rendering/offsets
+                    lecture_script = lecture_script.replace("\r\n", "\n").replace("\r", "\n")
                     
                     # Get figures for section (if any)
                     # TODO: Implement figure retrieval when figure system is ready

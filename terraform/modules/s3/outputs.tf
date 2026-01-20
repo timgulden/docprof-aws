@@ -35,3 +35,13 @@ output "frontend_website_endpoint" {
   value       = aws_s3_bucket_website_configuration.frontend.website_endpoint
 }
 
+output "audio_cache_bucket_name" {
+  description = "Name of the audio cache bucket"
+  value       = aws_s3_bucket.audio_cache.id
+}
+
+output "audio_cache_bucket_arn" {
+  description = "ARN of the audio cache bucket"
+  value       = aws_s3_bucket.audio_cache.arn
+}
+

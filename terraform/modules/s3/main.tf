@@ -175,3 +175,71 @@ resource "aws_s3_bucket_public_access_block" "frontend" {
 
 # TODO: Add bucket policy for CloudFront OAI access (when CloudFront module is created)
 
+# S3 Bucket for Audio Cache (Polly TTS output)
+resource "aws_s3_bucket" "audio_cache" {
+  bucket = "${var.project_name}-${var.environment}-audio-cache"
+
+  tags = merge(
+    var.tags,
+    {
+      Name    = "${var.project_name}-${var.environment}-audio-cache"
+      Purpose = "audio-cache"
+    }
+  )
+}
+
+# Encryption for audio cache bucket
+resource "aws_s3_bucket_server_side_encryption_configuration" "audio_cache" {
+  bucket = aws_s3_bucket.audio_cache.id
+
+  rule {
+    apply_server_side_encryption_by_default {
+      sse_algorithm = "AES256"
+    }
+  }
+}
+
+# Block public access for audio cache
+resource "aws_s3_bucket_public_access_block" "audio_cache" {
+  bucket = aws_s3_bucket.audio_cache.id
+
+  block_public_acls       = true
+  block_public_policy     = true
+  ignore_public_acls      = true
+  restrict_public_buckets = true
+}
+
+# Lifecycle policy for audio cache (delete after 30 days to save costs)
+resource "aws_s3_bucket_lifecycle_configuration" "audio_cache" {
+  bucket = aws_s3_bucket.audio_cache.id
+
+  rule {
+    id     = "expire-old-audio"
+    status = "Enabled"
+
+    filter {}
+
+    expiration {
+      days = 30
+    }
+  }
+}
+
+# CORS configuration for audio cache bucket
+# Allows audio playback from frontend
+resource "aws_s3_bucket_cors_configuration" "audio_cache" {
+  bucket = aws_s3_bucket.audio_cache.id
+
+  cors_rule {
+    allowed_headers = ["*"]
+    allowed_methods = ["GET", "HEAD"]
+    allowed_origins = [
+      "http://localhost:5173", # Vite dev server
+      "http://localhost:3000", # Alternative dev port
+      "https://*.cloudfront.net", # Production CloudFront distribution
+    ]
+    expose_headers  = ["Content-Length", "Content-Type", "Content-Range", "Accept-Ranges"]
+    max_age_seconds = 86400
+  }
+}
+

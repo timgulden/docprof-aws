@@ -1620,6 +1620,20 @@ module "api_gateway" {
       path                 = "courses/section/{sectionId}/lecture"
       require_auth         = true # Require authentication
     }
+    section_audio = {
+      method               = "GET"
+      lambda_function_name = module.section_audio_handler_lambda.function_name
+      lambda_invoke_arn    = module.section_audio_handler_lambda.function_invoke_arn
+      path                 = "courses/section/{sectionId}/audio"
+      require_auth         = true # Require authentication
+    }
+    section_speech_marks = {
+      method               = "GET"
+      lambda_function_name = module.section_audio_handler_lambda.function_name
+      lambda_invoke_arn    = module.section_audio_handler_lambda.function_invoke_arn
+      path                 = "courses/section/{sectionId}/speech-marks"
+      require_auth         = true # Require authentication
+    }
     section_generation_status = {
       method               = "GET"
       lambda_function_name = module.section_generation_status_handler_lambda.function_name
@@ -1651,6 +1665,7 @@ module "api_gateway" {
     module.course_retriever_lambda,
     module.course_outline_handler_lambda,
     module.section_lecture_handler_lambda,
+    module.section_audio_handler_lambda,
     module.section_generation_status_handler_lambda,
     module.section_complete_handler_lambda,
     module.course_status_handler_lambda,
@@ -2080,6 +2095,64 @@ module "section_lecture_handler_lambda" {
     module.iam,
     module.lambda_layer,
     module.shared_code_layer
+  ]
+}
+
+# Section Audio Handler Lambda - GET /courses/section/{sectionId}/audio, /speech-marks
+module "section_audio_handler_lambda" {
+  source = "../../modules/lambda"
+
+  project_name  = local.project_name
+  environment   = local.environment
+  function_name = "section-audio-handler"
+
+  handler     = "handler.lambda_handler"
+  runtime     = "python3.11"
+  timeout     = 120 # 2 minutes - Polly synthesis can take time for long lectures
+  memory_size = 512
+
+  source_path = "${path.module}/../../../src/lambda/section_audio_handler"
+
+  role_arn = module.iam.lambda_execution_role_arn
+
+  # Attach layers: Python dependencies + Shared code
+  layers = [
+    module.lambda_layer.layer_arn,
+    module.shared_code_layer.layer_arn
+  ]
+
+  # Don't bundle shared code - use layer instead
+  bundle_shared_code = false
+
+  environment_variables = {
+    DB_CLUSTER_ENDPOINT    = module.aurora.cluster_endpoint
+    DB_NAME                = module.aurora.database_name
+    DB_MASTER_USERNAME     = module.aurora.master_username
+    DB_PASSWORD_SECRET_ARN = module.aurora.master_password_secret_arn
+    AUDIO_CACHE_BUCKET     = module.s3.audio_cache_bucket_name
+    AWS_ACCOUNT_ID         = data.aws_caller_identity.current.account_id
+    # Polly configuration
+    POLLY_VOICE_ID = "Matthew"
+    POLLY_ENGINE   = "neural"
+  }
+
+  vpc_config = {
+    subnet_ids         = module.vpc.private_subnet_ids
+    security_group_ids = [module.vpc.lambda_security_group_id]
+  }
+
+  tags = {
+    Component = "course"
+    Function  = "audio-handler"
+  }
+
+  depends_on = [
+    module.aurora,
+    module.vpc,
+    module.iam,
+    module.lambda_layer,
+    module.shared_code_layer,
+    module.s3
   ]
 }
 

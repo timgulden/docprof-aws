@@ -10,11 +10,14 @@ import { PDFViewer } from "../pdf/PDFViewer";
 import { PDFViewerEmpty } from "../pdf/PDFViewerEmpty";
 import { usePdfViewer } from "../../hooks/usePdfViewer";
 import { useSectionAudio } from "../../hooks/useSectionAudio";
+import { usePollyAudio } from "../../hooks/usePollyAudio";
 import type { SourceCitation } from "../../types/chat";
 import { API_URL } from "../../api/client";
 import { FigureViewerItem } from "./FigureViewerItem";
 import { QACard } from "./QACard";
 import { GenerationProgress } from "./GenerationProgress";
+import { HighlightedLecture, ParagraphHighlightedLecture } from "./HighlightedLecture";
+import { SimpleLectureHighlight } from "./SimpleLectureHighlight";
 
 interface SectionPlayerProps {
   sectionId: string;
@@ -139,10 +142,32 @@ export const SectionPlayer = ({ sectionId, sectionTitle, courseId: propCourseId,
   const [playbackSpeed, setPlaybackSpeed] = useState<number>(1.5); // Will be loaded from user profile
   const [chunkMetadata, setChunkMetadata] = useState<ChunkMetadata[] | null>(null);
   
-  // Use audio hook for all audio playback logic
+  // Feature flag: Use Polly TTS with word-level highlighting (set via environment variable)
+  const usePollyTTS = import.meta.env.VITE_USE_POLLY_TTS === 'true' || false;
+  
+  // Polly audio hook (new system with word-level highlighting)
+  const pollyAudio = usePollyAudio({
+    sectionId,
+    lectureScript,
+    playbackSpeed,
+    onError: setError,
+  });
+  
+  // Old chunk-based audio hook (legacy system)
+  const legacyAudio = useSectionAudio({
+    sectionId,
+    chunkMetadata,
+    playbackSpeed,
+    setCurrentChunkIndex: (index) => {
+      // This is handled internally by the hook
+    },
+    setError,
+  });
+  
+  // Select which audio system to use
   const {
     isPlaying,
-    isLoadingChunk,
+    isLoadingChunk: isLoading,
     audioAvailable,
     audioBlobUrl,
     currentChunkIndex,
@@ -156,15 +181,30 @@ export const SectionPlayer = ({ sectionId, sectionTitle, courseId: propCourseId,
     onEnded,
     onError,
     onLoadedMetadata,
-  } = useSectionAudio({
-    sectionId,
-    chunkMetadata,
-    playbackSpeed,
-    setCurrentChunkIndex: (index) => {
-      // This is handled internally by the hook
+  } = usePollyTTS ? {
+    // Polly audio system
+    isPlaying: pollyAudio.isPlaying,
+    isLoadingChunk: pollyAudio.isLoading,
+    audioAvailable: pollyAudio.audioAvailable,
+    audioBlobUrl: null,
+    currentChunkIndex: null,
+    audioRef: pollyAudio.audioRef,
+    nextAudioRef: { current: null },
+    handlePlayPause: async () => {
+      if (pollyAudio.isPlaying) {
+        pollyAudio.pause();
+      } else {
+        await pollyAudio.play();
+      }
     },
-    setError,
-  });
+    handleChunkClick: (index: number) => {}, // Not applicable for Polly
+    onPlay: () => {},
+    onPause: () => {},
+    onTimeUpdate: () => {},
+    onEnded: () => {},
+    onError: () => {},
+    onLoadedMetadata: () => {},
+  } : legacyAudio;
   
   // Debug logging ref - only log on significant changes (every 5 seconds)
   // Reduce console spam from elapsed time counter (updates every 1 second)
@@ -210,6 +250,9 @@ export const SectionPlayer = ({ sectionId, sectionTitle, courseId: propCourseId,
     };
     loadPlaybackSpeed();
   }, []);
+
+  // Note: Audio loads on-demand when user clicks Play
+  // No need to auto-load as it's handled by the play button
 
   // Load chunk metadata when lecture script is available
   useEffect(() => {
@@ -1571,10 +1614,54 @@ When answering, maintain the same conversational style as the lecture. If asked 
               </p>
             </div>
           </div>
+          
+          {/* Playback controls (for Polly TTS) */}
+          {usePollyTTS && lectureScript && (
+            <div className="flex items-center gap-3 ml-auto">
+              {/* Play/Pause button */}
+              <button
+                onClick={handlePlayPause}
+                disabled={isLoading}
+                className="p-2 rounded-full bg-blue-600 text-white hover:bg-blue-700 disabled:bg-gray-400 disabled:cursor-not-allowed shadow-md transition-colors"
+                title={isPlaying ? "Pause" : "Play"}
+              >
+                {isLoading ? (
+                  <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                ) : isPlaying ? (
+                  <Pause className="w-5 h-5" />
+                ) : (
+                  <Play className="w-5 h-5 ml-0.5" />
+                )}
+              </button>
+              
+              {/* Playback speed */}
+              <select
+                value={playbackSpeed}
+                onChange={async (e) => {
+                  const speed = parseFloat(e.target.value);
+                  setPlaybackSpeed(speed);
+                  try {
+                    await updatePlaybackSpeed(speed);
+                  } catch (error) {
+                    console.error("Failed to update playback speed:", error);
+                  }
+                }}
+                className="text-sm border border-gray-300 rounded-md px-2 py-1 focus:outline-none focus:ring-2 focus:ring-blue-500"
+              >
+                <option value="0.75">0.75x</option>
+                <option value="1">1x</option>
+                <option value="1.25">1.25x</option>
+                <option value="1.5">1.5x</option>
+                <option value="1.75">1.75x</option>
+                <option value="2">2x</option>
+              </select>
+            </div>
+          )}
+          
           {/* Right side: Mark Complete */}
           <button
             onClick={handleComplete}
-            className="flex items-center gap-1.5 px-3 py-1.5 text-sm bg-green-600 text-white rounded-md hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-green-500 ml-auto"
+            className={`flex items-center gap-1.5 px-3 py-1.5 text-sm bg-green-600 text-white rounded-md hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-green-500 ${!usePollyTTS || !lectureScript ? 'ml-auto' : ''}`}
           >
             <CheckCircle className="w-4 h-4" />
             Mark Complete
@@ -1584,27 +1671,23 @@ When answering, maintain the same conversational style as the lecture. If asked 
       
       {/* Audio player elements - hidden, custom controls in header */}
       {/* Main audio element for current chunk */}
-      {lectureScript && (
-        <audio
-            ref={audioRef}
-            preload="auto"
-            style={{ display: 'none' }} // Hide completely - we use custom controls in header
-            onLoadedMetadata={onLoadedMetadata}
-            onPlay={onPlay}
-            onPause={onPause}
-            onTimeUpdate={onTimeUpdate}
-            onEnded={onEnded}
-            onError={onError}
-          />
-        )}
-        {/* Preload audio element for next chunk (eliminates gaps between chunks) */}
-        {lectureScript && (
-          <audio
-            ref={nextAudioRef}
-            preload="auto"
-            style={{ display: 'none' }} // Hide completely - used only for preloading
-          />
-        )}
+      <audio
+        ref={audioRef}
+        preload="auto"
+        style={{ display: 'none' }} // Hide completely - we use custom controls in header
+        onLoadedMetadata={onLoadedMetadata}
+        onPlay={onPlay}
+        onPause={onPause}
+        onTimeUpdate={onTimeUpdate}
+        onEnded={onEnded}
+        onError={onError}
+      />
+      {/* Preload audio element for next chunk (eliminates gaps between chunks) */}
+      <audio
+        ref={nextAudioRef}
+        preload="auto"
+        style={{ display: 'none' }} // Hide completely - used only for preloading
+      />
 
       {/* Main Content Area - Split Screen Layout (matches chat structure) */}
       <div className="relative flex flex-1 overflow-hidden">
@@ -1840,8 +1923,20 @@ When answering, maintain the same conversational style as the lecture. If asked 
                     );
                   })}
               </div>
+            ) : usePollyTTS ? (
+              // Polly TTS: Simplified highlighting (no layout shifts)
+              <SimpleLectureHighlight
+                lectureScript={lectureScript}
+                highlightPosition={pollyAudio.highlightPosition}
+                speechMarks={pollyAudio.speechMarks}
+                isPlaying={pollyAudio.isPlaying}
+                onWordClick={(wordIndex) => {
+                  pollyAudio.seekToWord(wordIndex);
+                }}
+                className="text-gray-800 leading-relaxed"
+              />
             ) : (
-              // Fallback: render without chunking if metadata not available
+              // Fallback: render without highlighting if metadata/marks not available
               <div className="whitespace-pre-wrap text-gray-800 leading-relaxed">
                 {lectureScript}
               </div>

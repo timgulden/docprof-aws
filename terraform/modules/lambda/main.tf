@@ -41,9 +41,6 @@ resource "aws_lambda_function" "this" {
       Project     = var.project_name
       Environment = var.environment
       ManagedBy   = "terraform"
-      # Include layer ARNs in tags to force update when they change
-      # This ensures Terraform detects layer version changes
-      LayerVersions = try(join(",", [for arn in var.layers : split(":", arn)[length(split(":", arn)) - 1]]), "none")
     }
   )
 }
